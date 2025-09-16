@@ -1,5 +1,3 @@
-
-
 import { Player, Lineup, StackingRules } from '../types';
 
 const ROSTER_SIZE = 6; // 1 MVP + 5 FLEX
@@ -16,7 +14,6 @@ const getLineupSignature = (mvp: Player, flex: Player[]): string => {
 };
 
 // Calculates stats for a given lineup
-// FIX: Expanded this function to calculate all required Lineup properties to fix a type error.
 function calculateLineupStats(mvp: Player, flex: Player[]): Omit<Lineup, 'mvp' | 'flex'> {
   const totalSalary = flex.reduce((sum, p) => sum + p.salary, mvp.salary);
   const totalFpts = flex.reduce((sum, p) => sum + getBoostedFpts(p), getBoostedFpts(mvp) * MVP_MULTIPLIER);
@@ -32,13 +29,16 @@ function calculateLineupStats(mvp: Player, flex: Player[]): Omit<Lineup, 'mvp' |
   });
   const stackType = Object.values(teamCounts).sort((a, b) => b - a).join('-');
 
+  // Placeholder ROI Score: rewards points per dollar, penalizes ownership
+  const roiScore = (totalFpts / (totalSalary / 10000)) - ownershipScore;
+
   return { 
       totalFpts, 
       totalSalary,
       ownershipScore,
       correlationScore: 0, // Placeholder: not enough data in CSV to calculate this.
       stackType,
-      roiScore: 0, // Placeholder: not enough data in CSV to calculate this.
+      roiScore,
   };
 }
 
@@ -78,7 +78,9 @@ function findOptimalLineup(
 ): Lineup | null {
   let bestLineup: Lineup | null = null;
 
-  const mainPool = players.filter(p => !excludedIds.has(p.id));
+  // Filter out players with 'unlikely' usage before starting optimization
+  // FIX: Corrected typo from 'unlikely' to 'Unlikely' to match the type definition.
+  const mainPool = players.filter(p => !excludedIds.has(p.id) && p.projectedUsage !== 'Unlikely');
   
   for (const mvp of mainPool) {
     // If MVP is locked, but this isn't a locked player, skip if any other locks exist
@@ -136,7 +138,6 @@ function findOptimalLineup(
     findFlex(0, []);
 
     if (bestFlexCombination) {
-      // FIX: Use the expanded calculateLineupStats and spread the result to create a valid Lineup object.
       const lineupStats = calculateLineupStats(mvp, bestFlexCombination);
       if (!bestLineup || lineupStats.totalFpts > bestLineup.totalFpts) {
         bestLineup = {

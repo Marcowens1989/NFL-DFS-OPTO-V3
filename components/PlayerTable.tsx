@@ -4,7 +4,6 @@ import LockIcon from './icons/LockIcon';
 import UnlockIcon from './icons/UnlockIcon';
 import ExcludeIcon from './icons/ExcludeIcon';
 import IncludeIcon from './icons/IncludeIcon';
-import FlameIcon from './icons/FlameIcon';
 
 interface PlayerTableProps {
   players: Player[];
@@ -22,6 +21,24 @@ interface SortConfig {
   key: SortableKeys | null;
   direction: 'ascending' | 'descending';
 }
+
+const UsageBadge: React.FC<{ usage: Player['projectedUsage'], sentiment: string }> = ({ usage, sentiment }) => {
+    const usageStyles: Record<Player['projectedUsage'], string> = {
+        'Starter': 'bg-green-500/20 text-green-300 border-green-500',
+        'Role Player': 'bg-yellow-500/20 text-yellow-300 border-yellow-500',
+        'Backup': 'bg-orange-500/20 text-orange-300 border-orange-500',
+        'Unlikely': 'bg-red-500/20 text-red-300 border-red-500',
+    };
+
+    return (
+        <span
+            title={sentiment}
+            className={`px-2 py-1 text-xs font-semibold rounded-full border ${usageStyles[usage] || 'bg-gray-500/20 text-gray-300'}`}
+        >
+            {usage}
+        </span>
+    );
+};
 
 const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures, playerRanks, onStatusChange, onExposureChange, onPlayerSelect }) => {
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'fpts', direction: 'descending' });
@@ -87,6 +104,7 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
           <tr>
             <th scope="col" className="px-4 py-3 text-center">Rank</th>
             <th scope="col" className="px-4 py-3">Player</th>
+            <th scope="col" className="px-2 py-3 text-center">Usage</th>
             <th scope="col" className={getHeaderClass('value')} onClick={() => requestSort('value')}>
                 Value (Pt/$)<span className="inline-block w-4">{getSortIndicator('value')}</span>
             </th>
@@ -110,21 +128,30 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
           {sortedPlayers.map((player) => {
             const status = statuses[player.id] || PlayerStatus.INCLUDED;
             const rank = playerRanks.get(player.id);
+            const tooltipText = `FPTS: ${player.fpts.toFixed(2)}\nSalary: $${player.salary.toLocaleString()}\nFLEX Own%: ${player.flexOwnership.toFixed(1)}%\nMVP Own%: ${player.mvpOwnership.toFixed(1)}%`;
+
             return (
               <tr key={player.id} className={`border-b border-gray-700 transition-colors duration-200 ${getRowClass(status)}`}>
                 <td className="px-4 py-2 font-medium text-white whitespace-nowrap text-center">{rank}</td>
                 <td className="px-4 py-2 font-medium text-white whitespace-nowrap">
                    <div className="flex items-center gap-2">
-                      <button onClick={() => onPlayerSelect(player)} className="text-left hover:underline focus:outline-none focus:underline" title={`View details for ${player.name}`}>
+                      <button 
+                        onClick={() => onPlayerSelect(player)} 
+                        className="text-left hover:underline focus:outline-none focus:underline" 
+                        title={tooltipText}
+                      >
                         {player.name}
                       </button>
                       {player.usageBoost > 0 && (
-                          <div title={player.notes}>
-                              <FlameIcon />
+                          <div title={`Projected Gain: +${player.usageBoost.toFixed(2)} FDP ↑\nReason: ${player.notes}`}>
+                              <span role="img" aria-label="Rising stock">📈</span>
                           </div>
                       )}
                    </div>
                   <span className="text-gray-400">{player.position}</span>
+                </td>
+                <td className="px-2 py-2 text-center">
+                    <UsageBadge usage={player.projectedUsage} sentiment={player.sentimentSummary} />
                 </td>
                 <td className="px-4 py-2 text-right">
                   {player.salary > 0 ? (player.fpts / (player.salary / 1000)).toFixed(2) : '0.00'}

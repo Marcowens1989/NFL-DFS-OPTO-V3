@@ -37,7 +37,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ hasPlayers, analysis, isLoading
                 <button
                     onClick={onAnalyze}
                     disabled={isLoading}
-                    className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg transition duration-300 disabled:bg-indigo-400"
+                    className="w-full flex items-center justify-center gap-2 bg-red-700 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition duration-300 disabled:bg-red-500"
                 >
                     <LightbulbIcon />
                     Analyze Slate with AI
@@ -45,7 +45,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ hasPlayers, analysis, isLoading
             )}
 
             {isLoading && (
-                 <div className="flex items-center justify-center gap-2 text-indigo-300 p-3 bg-indigo-500/10 border border-indigo-500 rounded-lg">
+                 <div className="flex items-center justify-center gap-2 text-red-300 p-3 bg-red-500/10 border border-red-500 rounded-lg">
                     <SpinnerIcon />
                     AI is analyzing the slate...
                 </div>
@@ -55,7 +55,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ hasPlayers, analysis, isLoading
                 <div className="space-y-4 text-gray-300">
                     {formattedAnalysis.map(({ title, content }) => (
                         <div key={title} className="bg-gray-800/50 p-4 rounded-lg border border-gray-700">
-                            <h3 className="text-lg font-semibold text-indigo-300 mb-2">{title}</h3>
+                            <h3 className="text-lg font-semibold text-red-300 mb-2">{title}</h3>
                             <p className="whitespace-pre-wrap text-sm leading-relaxed">{content}</p>
                         </div>
                     ))}

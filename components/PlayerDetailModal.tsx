@@ -15,10 +15,10 @@ const StatDisplay: React.FC<{ label: string; value: string | number; color?: str
     </div>
 );
 
-const MetricDisplay: React.FC<{ label: string; value: string | number }> = ({ label, value }) => (
-    <div className="flex justify-between items-center text-sm">
+const MetricDisplay: React.FC<{ label: string; value: string | number | React.ReactNode }> = ({ label, value }) => (
+    <div className="flex justify-between items-center text-sm py-1">
         <span className="text-gray-400">{label}:</span>
-        <span className="font-mono text-white capitalize">{value}</span>
+        <span className="font-mono text-white capitalize text-right">{value}</span>
     </div>
 );
 
@@ -57,9 +57,14 @@ const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRan
 
             <div className="space-y-4">
                 <div className="bg-gray-800 p-4 rounded-lg">
-                    <h3 className="font-bold text-lg mb-2 text-white">Ownership Projections</h3>
+                    <h3 className="font-bold text-lg mb-2 text-white">Projections & Usage</h3>
                     <MetricDisplay label="FLEX Ownership" value={`${player.flexOwnership.toFixed(1)}%`} />
                     <MetricDisplay label="MVP Ownership" value={`${player.mvpOwnership.toFixed(1)}%`} />
+                    <MetricDisplay label="Projected Usage" value={player.projectedUsage} />
+                     <div className="pt-2 mt-2 border-t border-gray-700">
+                        <p className="text-sm text-gray-400">Sentiment Summary:</p>
+                        <p className="text-sm text-white italic">"{player.sentimentSummary}"</p>
+                    </div>
                 </div>
                  <div className="bg-gray-800 p-4 rounded-lg">
                     <h3 className="font-bold text-lg mb-2 text-white">Advanced Metrics</h3>

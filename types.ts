@@ -37,6 +37,8 @@ export interface Player {
   gameScriptScore: number; // Score representing projected game pace and total
   blitzRateDefense: number; // Opponent's blitz rate %
   coordinatorTendency: 'pass-heavy' | 'run-heavy' | 'balanced';
+  projectedUsage: 'Starter' | 'Role Player' | 'Backup' | 'Unlikely';
+  sentimentSummary: string;
 
   // This is parsed from the FD file but is not used in the 2025 rules where MVP salary = FLEX salary
   mvpSalary: number;
@@ -99,4 +101,34 @@ export interface StatWeights {
   recYds: number;
   recTds: number;
   fumblesLost: number;
+}
+
+// Expanded interface for holding parsed historical data, ready for ML processing
+export interface ParsedHistoricalPlayer {
+    name: string;
+    team: string;
+    actualFdp: number;
+    passYds?: number;
+    passTds?: number;
+    interceptions?: number;
+    rushAtt?: number;
+    rushYds?: number;
+    rushTds?: number;
+    receptions?: number;
+    recYds?: number;
+    recTds?: number;
+    fumblesLost?: number;
+    actualFlexOwnership?: number;
+}
+
+export interface OwnershipData {
+    playerId: string;
+    ownership: number;
+}
+
+export interface OptimalLineupData {
+    rank: string;
+    score: number;
+    lineupSummary: string;
+    dupeCount: number;
 }
