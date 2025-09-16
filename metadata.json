@@ -1,0 +1,5 @@
+{
+  "name": "Marcus' NFL Showdown Optimizer",
+  "description": "An application to generate optimal lineups for FanDuel NFL Showdown contests. Upload a CSV with player data, manage player exposures, and find the highest projected lineup within the salary cap.",
+  "requestFramePermissions": []
+}
