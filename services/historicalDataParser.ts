@@ -53,7 +53,9 @@ async function parsePlayerStatBlob(statBlob: string): Promise<ParsedHistoricalPl
     const jsonText = response.text.trim().match(/\[[\s\S]*\]/)?.[0] || '[]';
     
     try {
-        return JSON.parse(jsonText);
+        const parsed = JSON.parse(jsonText);
+        // Post-processing validation to filter out malformed objects
+        return parsed.filter((p: any) => p && typeof p.name === 'string' && typeof p.team === 'string');
     } catch (e) {
         console.error("Failed to parse AI response as JSON for player stats:", jsonText);
         throw new Error("AI failed to return valid JSON for player stats. Please check the format of the pasted data.");
