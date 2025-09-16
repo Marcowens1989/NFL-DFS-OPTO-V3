@@ -1,5 +1,5 @@
 import { ParsedHistoricalPlayer, OptimalLineupData } from '../types';
-import { getAiClient } from './aiService';
+import { generateContent } from './aiModelService';
 
 // FanDuel Scoring Rules (simplified for offense)
 const SCORING_RULES = {
@@ -30,7 +30,7 @@ function calculateFanduelPoints(player: ParsedHistoricalPlayer): number {
 
 async function parsePlayerStatBlob(statBlob: string): Promise<ParsedHistoricalPlayer[]> {
     if (!statBlob.trim()) return [];
-    const ai = getAiClient();
+    
     const prompt = `
         You are a data parsing expert. Convert the following unstructured text blob of player stats into a clean JSON array.
         Each object in the array should represent a player and have the following structure with ONLY these keys:
@@ -49,8 +49,8 @@ async function parsePlayerStatBlob(statBlob: string): Promise<ParsedHistoricalPl
         ---
     `;
     
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-    const jsonText = response.text.trim().match(/\[[\s\S]*\]/)?.[0] || '[]';
+    const responseText = await generateContent(prompt);
+    const jsonText = responseText.trim().match(/\[[\s\S]*\]/)?.[0] || '[]';
     
     try {
         const parsed = JSON.parse(jsonText);
@@ -64,7 +64,7 @@ async function parsePlayerStatBlob(statBlob: string): Promise<ParsedHistoricalPl
 
 async function parseOwnershipBlob(ownershipBlob: string): Promise<Record<string, { actualFlexOwnership: number }>> {
     if (!ownershipBlob.trim()) return {};
-    const ai = getAiClient();
+
     const prompt = `
         You are a data parsing expert. The following text contains player ownership data. Convert it into a JSON object where the key is the player's full name and the value is an object with one key, "actualFlexOwnership", which should be the ownership percentage as a NUMBER.
         - Handle suffixes like 'Sr.' correctly.
@@ -76,8 +76,8 @@ async function parseOwnershipBlob(ownershipBlob: string): Promise<Record<string,
         ${ownershipBlob}
         ---
     `;
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-    const jsonText = response.text.trim().match(/\{[\s\S]*\}/)?.[0] || '{}';
+    const responseText = await generateContent(prompt);
+    const jsonText = responseText.trim().match(/\{[\s\S]*\}/)?.[0] || '{}';
 
     try {
         return JSON.parse(jsonText);
@@ -108,7 +108,6 @@ async function parseOptimalsBlob(optimalsBlob: string): Promise<OptimalLineupDat
 }
 
 export async function getWinningFactorsAnalysis(players: ParsedHistoricalPlayer[], optimals: OptimalLineupData[]): Promise<string> {
-    const ai = getAiClient();
     const topPlayers = players.sort((a,b) => b.actualFdp - a.actualFdp).slice(0,15);
     const playersSummary = topPlayers.map(p => `${p.name}: ${p.actualFdp.toFixed(2)} FDP @ ${p.actualFlexOwnership?.toFixed(1) ?? 'N/A'}% own`).join('\n');
     const optimalsSummary = optimals.slice(0,5).map(o => `Rank ${o.rank}: ${o.score.toFixed(2)} FDP - ${o.lineupSummary}`).join('\n');
@@ -130,8 +129,8 @@ export async function getWinningFactorsAnalysis(players: ParsedHistoricalPlayer[
     3.  **Salary Allocation:** Was it a "stars and scrubs" build (using very cheap players to afford expensive studs) or a more balanced approach?
     4.  **Winning Narrative:** What was the likely game script that led to this result?
     `;
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-    return response.text;
+    const responseText = await generateContent(prompt);
+    return responseText;
 }
 
 export async function parseHistoricalData(statBlob: string, ownershipBlob: string, optimalsBlob: string): Promise<{ players: ParsedHistoricalPlayer[], optimals: OptimalLineupData[] }> {

@@ -4,6 +4,7 @@ import LockIcon from './icons/LockIcon';
 import UnlockIcon from './icons/UnlockIcon';
 import ExcludeIcon from './icons/ExcludeIcon';
 import IncludeIcon from './icons/IncludeIcon';
+import DnaIcon from './icons/DnaIcon';
 
 interface PlayerTableProps {
   players: Player[];
@@ -142,6 +143,7 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
                       >
                         {player.name}
                       </button>
+                      {player.playerDnaReport && <DnaIcon />}
                       {player.usageBoost > 0 && (
                           <div title={`Projected Gain: +${player.usageBoost.toFixed(2)} FDP ↑\nReason: ${player.notes}`}>
                               <span role="img" aria-label="Rising stock">📈</span>

@@ -1,11 +1,15 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { Player } from '../types';
 import XIcon from './icons/XIcon';
+import DnaIcon from './icons/DnaIcon';
+import SpinnerIcon from './icons/SpinnerIcon';
 
 interface PlayerDetailModalProps {
   player: Player | null;
   playerRank: number | undefined;
+  allPlayers: Player[];
   onClose: () => void;
+  onGenerateDnaReport: (playerId: string) => Promise<void>;
 }
 
 const StatDisplay: React.FC<{ label: string; value: string | number; color?: string }> = ({ label, value, color = 'text-green-400' }) => (
@@ -22,9 +26,45 @@ const MetricDisplay: React.FC<{ label: string; value: string | number | React.Re
     </div>
 );
 
+const getCorrelationColor = (value: number): string => {
+    if (value > 0.4) return 'bg-green-600 text-green-100';
+    if (value > 0.15) return 'bg-green-800 text-green-200';
+    if (value < -0.4) return 'bg-red-600 text-red-100';
+    if (value < -0.15) return 'bg-red-800 text-red-200';
+    return 'bg-gray-700 text-gray-300';
+};
 
-const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRank, onClose }) => {
+
+const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRank, allPlayers, onClose, onGenerateDnaReport }) => {
+  const [isDnaLoading, setIsDnaLoading] = useState(false);
+
+  const { playerMap, sortedCorrelations, hasCorrelations } = useMemo(() => {
+    if (!player || !allPlayers) {
+      return { playerMap: new Map(), sortedCorrelations: [], hasCorrelations: false };
+    }
+    const map = new Map(allPlayers.map(p => [p.id, p]));
+    const correlationsExist = player.correlations && Object.keys(player.correlations).length > 0;
+    const sorted = correlationsExist
+      ? Object.entries(player.correlations)
+          .map(([id, value]) => ({
+            id,
+            value,
+            name: map.get(id)?.name || 'Unknown Player',
+          }))
+          .filter(c => c.id !== player.id) // Don't show correlation with self
+          .sort((a, b) => b.value - a.value)
+      : [];
+    return { playerMap: map, sortedCorrelations: sorted, hasCorrelations: correlationsExist };
+  }, [player, allPlayers]);
+  
   if (!player) return null;
+
+  const handleGenerateReportClick = async () => {
+    if (!player) return;
+    setIsDnaLoading(true);
+    await onGenerateDnaReport(player.id);
+    setIsDnaLoading(false);
+  };
 
   return (
     <div 
@@ -71,6 +111,38 @@ const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRan
                     <MetricDisplay label="Game Script Score" value={player.gameScriptScore.toFixed(1)} />
                     <MetricDisplay label="Opponent Blitz Rate" value={`${player.blitzRateDefense.toFixed(1)}%`} />
                     <MetricDisplay label="Coordinator Tendency" value={player.coordinatorTendency} />
+                </div>
+                <div className="bg-gray-800 p-4 rounded-lg">
+                    <h3 className="font-bold text-lg mb-2 text-white">Correlation Heatmap</h3>
+                    {hasCorrelations && sortedCorrelations.length > 0 ? (
+                        <div className="space-y-1 max-h-40 overflow-y-auto pr-2">
+                            {sortedCorrelations.map(({ id, value, name }) => (
+                                <div key={id} className="flex justify-between items-center text-sm py-0.5">
+                                    <span>{name}</span>
+                                    <span className={`px-2 py-0.5 rounded-full text-xs font-mono ${getCorrelationColor(value)}`}>
+                                        {value.toFixed(2)}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-sm text-gray-500 italic">Correlation data not available for this player.</p>
+                    )}
+                </div>
+                 <div className="bg-gray-800 p-4 rounded-lg">
+                    <h3 className="font-bold text-lg mb-2 text-white">AI Deep Dive Analysis</h3>
+                    {player.playerDnaReport ? (
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-300">{player.playerDnaReport}</p>
+                    ) : (
+                      <button 
+                        onClick={handleGenerateReportClick} 
+                        disabled={isDnaLoading}
+                        className="w-full flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-4 rounded-lg transition duration-300 disabled:bg-cyan-800"
+                      >
+                        {isDnaLoading ? <SpinnerIcon /> : <DnaIcon />}
+                        {isDnaLoading ? 'Generating Report...' : 'Generate Player DNA Report'}
+                      </button>
+                    )}
                 </div>
             </div>
         </div>

@@ -9,8 +9,8 @@ import PlayerDetailModal from './PlayerDetailModal';
 import AIAnalysis from './AIAnalysis';
 import StackingRulesEditor from './StackingRulesEditor';
 import { strategyPresets } from '../services/strategyPresets';
-import { UploadData } from '../services/dataManager';
-import { getAiClient } from '../services/aiService';
+import { UploadData, getPlayerDnaReport } from '../services/dataManager';
+import { generateContent } from '../services/aiModelService';
 
 
 const SALARY_CAP = 60000;
@@ -100,6 +100,36 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
   const handleCloseModal = useCallback(() => {
     setSelectedPlayer(null);
   }, []);
+  
+  const handleGenerateDnaReport = useCallback(async (playerId: string) => {
+    const playerToUpdate = players.find(p => p.id === playerId);
+    if (!playerToUpdate) return;
+
+    try {
+        const report = await getPlayerDnaReport(playerToUpdate);
+        
+        const updatePlayerState = (p: Player) => 
+            p.id === playerId ? { ...p, playerDnaReport: report } : p;
+            
+        setPlayers(prevPlayers => prevPlayers.map(updatePlayerState));
+        
+        setSelectedPlayer(prev => 
+            prev && prev.id === playerId ? updatePlayerState(prev) : prev
+        );
+    } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+        setError(`DNA Report Error: ${errorMessage}`);
+        // Optionally update the player with an error message in the report
+        const updatePlayerWithError = (p: Player) => 
+            p.id === playerId ? { ...p, playerDnaReport: `Error: ${errorMessage}` } : p;
+
+        setPlayers(prevPlayers => prevPlayers.map(updatePlayerWithError));
+        setSelectedPlayer(prev => 
+            prev && prev.id === playerId ? updatePlayerWithError(prev) : prev
+        );
+    }
+  }, [players]);
+
 
   const handleAnalyzeSlate = useCallback(async () => {
     if (!players || players.length === 0) return;
@@ -110,8 +140,6 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
     setRecommendedStrategy(null);
 
     try {
-      const ai = getAiClient();
-      
        const topPlayers = players
         .slice()
         .sort((a, b) => b.salary - a.salary)
@@ -164,12 +192,7 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
         ${strategyDescriptions}
       `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-      
-      const responseText = response.text;
+      const responseText = await generateContent(prompt);
       
       if (!responseText) {
           throw new Error("Received an empty or invalid response from the AI. It may have been blocked due to safety settings.");
@@ -338,7 +361,9 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
       <PlayerDetailModal 
         player={selectedPlayer}
         playerRank={selectedPlayer ? playerRanks.get(selectedPlayer.id) : undefined}
+        allPlayers={players}
         onClose={handleCloseModal}
+        onGenerateDnaReport={handleGenerateDnaReport}
       />
     </>
   );

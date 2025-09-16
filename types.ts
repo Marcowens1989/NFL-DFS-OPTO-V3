@@ -39,6 +39,7 @@ export interface Player {
   coordinatorTendency: 'pass-heavy' | 'run-heavy' | 'balanced';
   projectedUsage: 'Starter' | 'Role Player' | 'Backup' | 'Unlikely';
   sentimentSummary: string;
+  playerDnaReport?: string; // For on-demand AI deep-dive analysis
 
   // This is parsed from the FD file but is not used in the 2025 rules where MVP salary = FLEX salary
   mvpSalary: number;

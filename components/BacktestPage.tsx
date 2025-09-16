@@ -65,6 +65,7 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
     const [statWeights, setStatWeights] = useState<StatWeights>(INITIAL_WEIGHTS);
     const [winningFactors, setWinningFactors] = useState<string | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const hasProcessedData = processedData.length > 0;
 
     const handleWeightChange = (stat: keyof StatWeights, value: number) => {
         setStatWeights(prev => ({ ...prev, [stat]: value }));
@@ -191,7 +192,7 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
                  <button
                     onClick={handleProcessData}
                     disabled={isLoading}
-                    className="w-1/2 flex items-center justify-center gap-2 bg-red-700 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition duration-300 disabled:bg-red-500"
+                    className="w-1/2 flex items-center justify-center gap-2 bg-red-700 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition duration-300 disabled:bg-red-800 disabled:cursor-not-allowed"
                 >
                     {isLoading ? <><SpinnerIcon /> AI is Processing Data...</> : 'Process Historical Data'}
                 </button>
@@ -199,7 +200,7 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
              
             {error && <div className="mt-4 p-3 bg-red-500/20 text-red-300 border border-red-500 rounded">{error}</div>}
 
-            {processedData.length > 0 && (
+            {hasProcessedData && (
                 <>
                  <div className="border-t border-gray-700 pt-6">
                     <h2 className="text-2xl font-bold mb-4 text-white">Processed Slate Data</h2>
@@ -224,6 +225,35 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
                         </table>
                     </div>
                 </div>
+                
+                {optimalLineups.length > 0 && (
+                  <div className="border-t border-gray-700 pt-6">
+                      <h2 className="text-2xl font-bold mb-4 text-white">Top Contest Lineups</h2>
+                      <div className="overflow-x-auto max-h-[60vh] relative border border-gray-700 rounded-lg">
+                          <table className="w-full text-sm text-left">
+                              <thead className="text-xs text-white font-bold uppercase bg-gray-800 sticky top-0">
+                                  <tr>
+                                      <th className="px-4 py-3">Rank</th>
+                                      <th className="px-4 py-3 text-right">Score</th>
+                                      <th className="px-4 py-3">Lineup Summary</th>
+                                      <th className="px-4 py-3 text-right">Dupes</th>
+                                  </tr>
+                              </thead>
+                              <tbody>
+                                  {optimalLineups.map((lineup, index) => (
+                                      <tr key={index} className="border-b border-gray-700 bg-gray-900 hover:bg-gray-800">
+                                          <td className="px-4 py-2 font-medium text-white">{lineup.rank}</td>
+                                          <td className="px-4 py-2 font-bold text-green-400 text-right">{lineup.score.toFixed(2)}</td>
+                                          <td className="px-4 py-2 text-gray-300 text-xs">{lineup.lineupSummary}</td>
+                                          <td className="px-4 py-2 text-right text-gray-300">{lineup.dupeCount}</td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                          </table>
+                      </div>
+                  </div>
+                )}
+
 
                 <div className="border-t border-gray-700 pt-6">
                     <h2 className="text-2xl font-bold mb-4 text-white">Projection Model</h2>
@@ -239,10 +269,18 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
                         <StatWeightSlider label="Fumbles Lost" stat="fumblesLost" value={statWeights.fumblesLost} min={-3} max={0} step={0.25} onChange={handleWeightChange} />
                     </div>
                      <div className="mt-4 flex flex-col sm:flex-row gap-4">
-                         <button onClick={handleCalculateOptimalWeights} className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors">
+                         <button 
+                            onClick={handleCalculateOptimalWeights} 
+                            disabled={!hasProcessedData}
+                            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors disabled:bg-gray-800 disabled:cursor-not-allowed"
+                         >
                            Calculate Optimal Weights (ML)
                          </button>
-                         <button onClick={() => onStatWeightsChange(statWeights)} className="flex-1 bg-red-700 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition-colors">
+                         <button 
+                            onClick={() => onStatWeightsChange(statWeights)}
+                            disabled={!hasProcessedData}
+                            className="flex-1 bg-red-700 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition-colors disabled:bg-red-900 disabled:cursor-not-allowed"
+                          >
                            Apply Weights to Optimizer
                          </button>
                     </div>
@@ -251,7 +289,11 @@ const BacktestPage: React.FC<BacktestPageProps> = ({ onStatWeightsChange }) => {
                  <div className="border-t border-gray-700 pt-6">
                     <h2 className="text-2xl font-bold mb-4 text-white">AI Winning Factors Analysis</h2>
                     {!winningFactors && !isAnalyzing && (
-                         <button onClick={handleAnalyzeWinningFactors} className="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors">
+                         <button 
+                            onClick={handleAnalyzeWinningFactors} 
+                            disabled={!hasProcessedData}
+                            className="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors disabled:bg-gray-800 disabled:cursor-not-allowed"
+                         >
                            Analyze Winning Factors (AI)
                          </button>
                     )}

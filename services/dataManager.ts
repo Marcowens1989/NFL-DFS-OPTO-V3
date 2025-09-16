@@ -2,7 +2,7 @@ import { Player, PlayerStatus, StatProjections } from '../types';
 import { generateOwnershipProjections } from './ownership';
 import { analyzePlayerValue } from './valueAnalyzer';
 import { getPlayerStatusesFromSleeper, getGameDataFromOddsApi } from './externalApis';
-import { getAiClient } from './aiService';
+import { generateContent } from './aiModelService';
 
 export interface UploadData {
   players: Player[];
@@ -11,18 +11,6 @@ export interface UploadData {
 }
 
 // --- Helper Functions ---
-
-function fetchWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error("AI request timed out"))
-    }, ms);
-    promise.then(
-      (res) => { clearTimeout(timeoutId); resolve(res); },
-      (err) => { clearTimeout(timeoutId); reject(err); }
-    );
-  });
-}
 
 /**
  * Extracts a JSON object from a string, even if it's surrounded by other text.
@@ -99,14 +87,12 @@ async function parseCsv(file: File): Promise<Player[]> {
 
 async function validatePlayersWithAI(players: Player[]): Promise<{ playersToExclude: Set<string>; validationSummary: string; }> {
   try {
-    const ai = getAiClient();
     const playerList = players.map(p => `- ${p.name} (${p.position}, ${p.team}) - Current Status: '${p.injuryStatus || 'None'}'`).join('\n');
     const prompt = `You are a DFS data validation expert. Using your search capabilities, determine if any players from the list below are confirmed INACTIVE (OUT, IR, etc.). Do not flag players who are just Questionable or Doubtful. Respond with a comma-separated list of the full names of ONLY the players confirmed INACTIVE, followed by '---', followed by a one-sentence summary. If none, respond with "None---All players appear active."\n\n${playerList}`;
 
-    const apiCall = ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { tools: [{ googleSearch: {} }] } });
-    const response = await fetchWithTimeout(apiCall, 30000);
+    const responseText = await generateContent(prompt);
 
-    const [inactiveNamesStr, summary] = response.text.split('---');
+    const [inactiveNamesStr, summary] = responseText.split('---');
     const playersToExclude = new Set<string>();
     if (inactiveNamesStr && inactiveNamesStr.toLowerCase().trim() !== 'none') {
       const inactiveNames = inactiveNamesStr.split(',').map(name => name.trim().toLowerCase());
@@ -125,12 +111,10 @@ async function validatePlayersWithAI(players: Player[]): Promise<{ playersToExcl
 
 async function _enrichGameScriptWithAI(team: string, opponent: string): Promise<{ data: number, report: string }> {
     try {
-        const ai = getAiClient();
         const gameIdentifier = `${team} vs ${opponent}`;
         const prompt = `What is the Vegas Point Total for the NFL game: ${gameIdentifier}? Respond with only the number.`;
-        const apiCall = ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { tools: [{ googleSearch: {} }] } });
-        const response = await fetchWithTimeout(apiCall, 25000);
-        const score = parseFloat(response.text);
+        const responseText = await generateContent(prompt);
+        const score = parseFloat(responseText);
         if (isNaN(score)) throw new Error("AI did not return a valid number.");
         return { data: score, report: `Game Script Score from AI Fallback: ${score.toFixed(1)}` };
     } catch (error) {
@@ -141,11 +125,9 @@ async function _enrichGameScriptWithAI(team: string, opponent: string): Promise<
 
 async function _enrichCoordinatorTendenciesWithAI(team: string, opponent: string): Promise<{ data: Record<string, { coordinatorTendency: Player['coordinatorTendency'] }>, report: string }> {
   try {
-    const ai = getAiClient();
     const prompt = `For the NFL game ${team} vs ${opponent}, what is the offensive coordinator tendency for each team ('pass-heavy', 'run-heavy', 'balanced')? Respond with ONLY a JSON object like {"${team}": {"coordinatorTendency": "value"}, "${opponent}": {"coordinatorTendency": "value"}}`;
-    const apiCall = ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { tools: [{ googleSearch: {} }] } });
-    const response = await fetchWithTimeout(apiCall, 25000);
-    const jsonData = extractJsonObject(response.text);
+    const responseText = await generateContent(prompt);
+    const jsonData = extractJsonObject(responseText);
     if (!jsonData) throw new Error("AI did not return valid JSON.");
     return { data: jsonData, report: "Coordinator Tendencies from AI: Success." };
   } catch (error) {
@@ -157,11 +139,9 @@ async function _enrichCoordinatorTendenciesWithAI(team: string, opponent: string
 
 async function _enrichBlitzRatesWithAI(team: string, opponent: string): Promise<{ data: Record<string, { blitzRateDefense: number }>, report: string}> {
   try {
-    const ai = getAiClient();
     const prompt = `For the NFL game ${team} vs ${opponent}, what is the defensive blitz rate percentage for each team? Respond with ONLY a JSON object like {"${team}": {"blitzRateDefense": NUMBER}, "${opponent}": {"blitzRateDefense": NUMBER}}`;
-    const apiCall = ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { tools: [{ googleSearch: {} }] } });
-    const response = await fetchWithTimeout(apiCall, 45000); // Increased timeout
-    const jsonData = extractJsonObject(response.text);
+    const responseText = await generateContent(prompt);
+    const jsonData = extractJsonObject(responseText);
     if (!jsonData) throw new Error("AI did not return valid JSON.");
     return { data: jsonData, report: "Blitz Rates from AI: Success." };
   } catch (error) {
@@ -192,16 +172,13 @@ async function enrichWithUsageAndSentiment(players: Player[]): Promise<Player[]>
   let playersWithUsage = assignDefaultUsageHeuristics(players);
 
   // 2. Fetch sentiment for each player individually and in parallel
-  const ai = getAiClient();
-
   const fetchSentiment = async (player: Player): Promise<Partial<Player>> => {
     const prompt = `
       You are an expert fantasy football analyst. For ${player.name} (${player.position}, ${player.team}), use your search capabilities to find the latest news, coach-speak, or beat reporter sentiment for their next game.
       Respond with a single, concise sentence summarizing the sentiment. If no specific news is found, respond with "No specific news."`;
     try {
-      const apiCall = ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { tools: [{ googleSearch: {} }] } });
-      const response = await fetchWithTimeout(apiCall, 20000); // 20s timeout per player
-      return { sentimentSummary: response.text.trim() };
+      const responseText = await generateContent(prompt, 20000); // 20s timeout per player
+      return { sentimentSummary: responseText.trim() };
     } catch (error) {
       console.error(`Error fetching sentiment for ${player.name}:`, error);
       return { sentimentSummary: "No specific news." }; // Default value on failure
@@ -220,6 +197,30 @@ async function enrichWithUsageAndSentiment(players: Player[]): Promise<Player[]>
     return player; // Keep original player data if promise failed
   });
 }
+
+export async function getPlayerDnaReport(player: Player): Promise<string> {
+    const prompt = `
+        You are a world-class NFL scout and fantasy football analyst.
+        For the player ${player.name} (${player.position}, ${player.team}), who is playing against ${player.opponent}, perform a deep-dive analysis using your search capabilities.
+        Find and synthesize advanced metrics to create a "Player DNA Report".
+        The report should be a concise, actionable summary covering the following key areas:
+
+        1.  **Usage & Role:** What is their specific role in the offense? (e.g., "High-volume possession receiver", "Red zone rushing specialist", "Deep threat").
+        2.  **Key Strengths (based on advanced stats):** Mention 1-2 key strengths supported by metrics like Red Zone Target Share, Average Depth of Target (aDOT), Yards After Catch (YAC), Yards Per Route Run, or Breakaway Run Rate.
+        3.  **Key Weaknesses / Concerns:** Mention 1-2 weaknesses or concerns, such as a tough defensive matchup (e.g., "facing a shutdown cornerback"), inefficiency, or volatility.
+        4.  **Path to a Ceiling Performance:** In one sentence, describe what needs to happen in the game for this player to have a slate-winning performance.
+
+        Respond with only the markdown-formatted report.
+    `;
+    try {
+        const report = await generateContent(prompt, 45000); // Give it a longer timeout
+        return report;
+    } catch (error) {
+        console.error(`Error generating DNA report for ${player.name}:`, error);
+        throw new Error(`Failed to generate DNA report. The AI may be temporarily unavailable.`);
+    }
+}
+
 
 // --- Main Orchestrator ---
 
