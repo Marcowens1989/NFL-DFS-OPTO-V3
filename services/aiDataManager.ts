@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { Player } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
@@ -6,6 +6,26 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
 interface ValidationResult {
     playersToExclude: Set<string>;
     validationSummary: string;
+}
+
+// Custom timeout function
+// FIX: Made fetchWithTimeout a generic function to preserve the Promise's type.
+function fetchWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error("AI request timed out"))
+    }, ms);
+    promise.then(
+      (res) => {
+        clearTimeout(timeoutId);
+        resolve(res);
+      },
+      (err) => {
+        clearTimeout(timeoutId);
+        reject(err);
+      }
+    );
+  });
 }
 
 export async function validatePlayers(players: Player[]): Promise<ValidationResult> {
@@ -27,13 +47,16 @@ export async function validatePlayers(players: Player[]): Promise<ValidationResu
             Jason Sanders,Tyler Bass---Jason Sanders excluded (IR), Tyler Bass excluded (Out).
         `;
 
-        const response = await ai.models.generateContent({
+        const apiCall = ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
             config: {
                 tools: [{ googleSearch: {} }],
             },
         });
+
+        // FIX: The response type is now correctly inferred as GenerateContentResponse, fixing the error on `response.text`.
+        const response = await fetchWithTimeout(apiCall, 30000); // 30-second timeout
 
         const [inactiveNamesStr, summary] = response.text.split('---');
 
@@ -56,7 +79,7 @@ export async function validatePlayers(players: Player[]): Promise<ValidationResu
         console.error("Error validating player data with AI:", error);
         return {
             playersToExclude: new Set(),
-            validationSummary: "AI validation failed. Please check player statuses manually.",
+            validationSummary: `AI validation failed: ${error.message}. Please check player statuses manually.`,
         };
     }
 }
@@ -94,16 +117,18 @@ export async function enrichGameData(players: Player[]): Promise<Player[]> {
             }
         `;
         
-        const response = await ai.models.generateContent({
+        const apiCall = ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
              config: {
-                responseMimeType: "application/json",
                 tools: [{ googleSearch: {} }],
              },
         });
         
-        const jsonText = response.text.trim();
+        // FIX: The response type is now correctly inferred as GenerateContentResponse, fixing the error on `response.text`.
+        const response = await fetchWithTimeout(apiCall, 30000); // 30-second timeout
+
+        const jsonText = response.text.trim().replace(/```json\n?/, '').replace(/```$/, '');
         const data = JSON.parse(jsonText);
 
         const enrichedPlayers = players.map(p => {
