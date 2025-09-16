@@ -27,34 +27,34 @@ const MetricDisplay: React.FC<{ label: string; value: string | number | React.Re
 );
 
 const getCorrelationColor = (value: number): string => {
-    if (value > 0.4) return 'bg-green-600 text-green-100';
-    if (value > 0.15) return 'bg-green-800 text-green-200';
-    if (value < -0.4) return 'bg-red-600 text-red-100';
-    if (value < -0.15) return 'bg-red-800 text-red-200';
-    return 'bg-gray-700 text-gray-300';
+    if (value > 0.4) return 'bg-green-500/30 text-green-300 border border-green-500'; // Strong positive
+    if (value > 0.15) return 'bg-green-500/10 text-green-400 border border-green-500/40'; // Positive
+    if (value < -0.4) return 'bg-red-500/30 text-red-300 border border-red-500'; // Strong negative
+    if (value < -0.15) return 'bg-red-500/10 text-red-400 border border-red-500/40'; // Negative
+    return 'bg-gray-500/10 text-gray-400 border border-gray-500/40'; // Neutral
 };
 
 
 const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRank, allPlayers, onClose, onGenerateDnaReport }) => {
   const [isDnaLoading, setIsDnaLoading] = useState(false);
 
-  const { playerMap, sortedCorrelations, hasCorrelations } = useMemo(() => {
+  const { sortedCorrelations, hasCorrelations } = useMemo(() => {
     if (!player || !allPlayers) {
-      return { playerMap: new Map(), sortedCorrelations: [], hasCorrelations: false };
+      return { sortedCorrelations: [], hasCorrelations: false };
     }
-    const map = new Map(allPlayers.map(p => [p.id, p]));
+    const map = new Map(allPlayers.map(p => [p.id, p.name]));
     const correlationsExist = player.correlations && Object.keys(player.correlations).length > 0;
     const sorted = correlationsExist
       ? Object.entries(player.correlations)
           .map(([id, value]) => ({
             id,
             value,
-            name: map.get(id)?.name || 'Unknown Player',
+            name: map.get(id) || 'Unknown Player',
           }))
           .filter(c => c.id !== player.id) // Don't show correlation with self
-          .sort((a, b) => b.value - a.value)
+          .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)) // Sort by absolute value to see strongest correlations first
       : [];
-    return { playerMap: map, sortedCorrelations: sorted, hasCorrelations: correlationsExist };
+    return { sortedCorrelations: sorted, hasCorrelations: correlationsExist };
   }, [player, allPlayers]);
   
   if (!player) return null;
@@ -115,15 +115,15 @@ const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRan
                 <div className="bg-gray-800 p-4 rounded-lg">
                     <h3 className="font-bold text-lg mb-2 text-white">Correlation Heatmap</h3>
                     {hasCorrelations && sortedCorrelations.length > 0 ? (
-                        <div className="space-y-1 max-h-40 overflow-y-auto pr-2">
-                            {sortedCorrelations.map(({ id, value, name }) => (
-                                <div key={id} className="flex justify-between items-center text-sm py-0.5">
-                                    <span>{name}</span>
-                                    <span className={`px-2 py-0.5 rounded-full text-xs font-mono ${getCorrelationColor(value)}`}>
-                                        {value.toFixed(2)}
-                                    </span>
-                                </div>
-                            ))}
+                        <div className="max-h-40 overflow-y-auto pr-2">
+                            <div className="flex flex-wrap gap-2">
+                                {sortedCorrelations.map(({ id, value, name }) => (
+                                    <div key={id} className={`flex items-baseline gap-2 px-3 py-1 rounded-full text-sm transition-colors ${getCorrelationColor(value)}`}>
+                                        <span className="font-semibold">{name}</span>
+                                        <span className="font-mono text-xs">{value.toFixed(2)}</span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     ) : (
                         <p className="text-sm text-gray-500 italic">Correlation data not available for this player.</p>
