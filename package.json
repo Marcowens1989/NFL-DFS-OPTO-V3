@@ -15,7 +15,9 @@
     "axios": "^1.7.2",
     "ml-regression": "^5.0.0",
     "dexie": "^4.0.7",
-    "zod": "3.23.8"
+    "zod": "3.23.8",
+    "glpk.js": "^4.6.5",
+    "@tanstack/react-virtual": "^3.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

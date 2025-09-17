@@ -14,10 +14,11 @@ import { generateContent } from '../services/aiModelService';
 import ShowdownCommandCenter from './ShowdownCommandCenter';
 import OptimizationTargetSelector from './OptimizationTargetSelector';
 import SlateStructureAnalysis from './SlateStructureAnalysis';
-import { calculateFptsFromProjections } from '../services/projectionService';
+import { projectPlayerStats } from '../services/projectionService';
 import ModelSelector from './ModelSelector';
 import { generateLineupsInWorker } from '../services/workerClient';
-
+import { generateRunManifest } from '../services/runArtifactService';
+import { logger } from '../services/loggingService';
 
 const SALARY_CAP = 60000;
 const INITIAL_STACKING_RULES: StackingRules = {
@@ -58,21 +59,21 @@ function OptimizerPage({ players, statWeights, onPlayersUpdate, onRunBacktest, s
   const [recommendedModelId, setRecommendedModelId] = useState<string | null>(null);
 
 
-  // FIX: Replaced a faulty useEffect with useMemo. This is the correct, idiomatic React way
-  // to derive state. It ensures projections are always perfectly synchronized with the
-  // active model and source player data, eliminating race conditions and infinite loops.
   const projectedPlayers = useMemo(() => {
     if (!players || players.length === 0) {
       return [];
     }
-    return players.map(p => ({
-      ...p,
-      fpts: calculateFptsFromProjections(p.statProjections?.mean, statWeights),
-      scenarioFpts: {
-        ...p.scenarioFpts,
-        ceiling: calculateFptsFromProjections(p.statProjections?.ceiling, statWeights),
-      }
-    }));
+    return players.map(p => {
+        const { meanFpts, ceilingFpts } = projectPlayerStats(p.advancedStats, statWeights);
+        return {
+          ...p,
+          fpts: meanFpts,
+          scenarioFpts: {
+            ...p.scenarioFpts,
+            ceiling: ceilingFpts,
+          }
+        };
+    });
   }, [players, statWeights]);
 
 
@@ -249,24 +250,32 @@ function OptimizerPage({ players, statWeights, onPlayersUpdate, onRunBacktest, s
     setError(null);
     
     try {
-      const { lockedPlayers, excludedIds } = Object.entries(playerStatuses).reduce(
+      const { lockedPlayers, excludedIds, lockedPlayerIds, excludedPlayerIds } = Object.entries(playerStatuses).reduce(
         (acc, [id, status]) => {
           if (status === PlayerStatus.LOCKED) {
             const player = projectedPlayers.find(p => p.id === id);
-            if(player) acc.lockedPlayers.push(player);
+            if(player) {
+              acc.lockedPlayers.push(player);
+              acc.lockedPlayerIds.push(id);
+            }
           } else if (status === PlayerStatus.EXCLUDED) {
             acc.excludedIds.add(id);
+            acc.excludedPlayerIds.push(id);
           }
           return acc;
         },
-        { lockedPlayers: [] as Player[], excludedIds: new Set<string>() }
+        { lockedPlayers: [] as Player[], excludedIds: new Set<string>(), lockedPlayerIds: [] as string[], excludedPlayerIds: [] as string[] }
       );
       
-      // Use the worker to generate lineups off the main thread
+      const settings: OptimizerSettings = { lockedPlayerIds, excludedPlayerIds, numberOfLineups, salaryCap, stackingRules, optimizationTarget };
+      const manifest = await generateRunManifest(settings, activeModelId, players);
+      logger.info('Run Manifest Generated', { manifest });
+
       const lineups = await generateLineupsInWorker(
         projectedPlayers, 
         lockedPlayers, 
-        excludedIds, 
+        // FIX: Pass the Set directly instead of converting to an array, as required by the function signature.
+        excludedIds,
         numberOfLineups,
         salaryCap,
         stackingRules,
@@ -276,17 +285,18 @@ function OptimizerPage({ players, statWeights, onPlayersUpdate, onRunBacktest, s
       if (lineups && lineups.length > 0) {
         setOptimalLineups(lineups);
         if (lineups.length < numberOfLineups) {
-          setError(`Warning: Only able to generate ${lineups.length} of ${numberOfLineups} requested lineups with the current rules. Try relaxing constraints.`);
+          setError(`Warning: Only able to generate ${lineups.length} of ${numberOfLineups} requested lineups. Try relaxing constraints.`);
         }
       } else {
-        setError("Could not generate any valid lineups with the given constraints. Try adjusting locked/excluded players, exposures, stacking rules, or the salary cap.");
+        setError("Could not generate any valid lineups. Try adjusting locked/excluded players, stacking rules, or salary cap.");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "An unknown error occurred during optimization.");
+      logger.error('Optimization failed', { error: e });
     } finally {
       setIsLoading(false);
     }
-  }, [projectedPlayers, playerStatuses, salaryCap, numberOfLineups, stackingRules, optimizationTarget]);
+  }, [projectedPlayers, playerStatuses, salaryCap, numberOfLineups, stackingRules, optimizationTarget, activeModelId, players]);
 
   const handleRunBacktestClick = useCallback(() => {
     const lockedPlayerIds = Object.entries(playerStatuses)

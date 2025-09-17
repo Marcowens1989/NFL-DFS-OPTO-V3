@@ -24,7 +24,7 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onTabChange }) => {
               <span className="font-bold">Marcus' NFL SHOWDOWN OPTIMIZER</span>
               <span className="ml-3" role="img" aria-label="football">🏈</span>
             </h1>
-            <p className="text-gray-400 mt-1">Your personal DFS lineup generator.</p>
+            <p className="text-gray-400 mt-1">Running through awesomo and all the other weak ass dfs players since 93' season with my boy lieetal keed and detective pitt.</p>
           </div>
           <nav className="flex space-x-2">
             <button 

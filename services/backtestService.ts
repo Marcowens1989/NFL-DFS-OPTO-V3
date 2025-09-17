@@ -66,6 +66,7 @@ export async function runBacktest(
                 usageBoost: 0,
                 notes: '',
                 statProjections: undefined,
+                advancedStats: p.advancedStats,
                 vegas: null,
                 scenarioFpts: {
                     ceiling: p.actualFdp * 1.5,
@@ -77,6 +78,9 @@ export async function runBacktest(
                 projectedUsage: 'Starter',
                 sentimentSummary: '',
                 leverage: 0,
+                // FIX: Add missing required properties 'volatility' and 'tags' to conform to the Player type.
+                volatility: 50,
+                tags: '',
                 mvpSalary: p.salary!,
             }));
         
@@ -88,7 +92,8 @@ export async function runBacktest(
         const lockedPlayers = poolWithSalaries.filter(p => lockedPlayerNames.includes(p.name));
         const excludedIds = new Set(poolWithSalaries.filter(p => excludedPlayerNames.includes(p.name)).map(p => p.id));
         
-        const generatedLineups = generateMultipleLineups(
+        // FIX: Added await, as generateMultipleLineups is an async function.
+        const generatedLineups = await generateMultipleLineups(
             poolWithSalaries,
             lockedPlayers,
             excludedIds,

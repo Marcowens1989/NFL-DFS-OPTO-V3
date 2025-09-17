@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 // Schema for raw data parsed from the FanDuel CSV
-// We use `passthrough` to avoid errors if FanDuel adds extra columns we don't use.
 export const FdCsvPlayerSchema = z.object({
     Id: z.string().min(1),
     Nickname: z.string().min(1),
@@ -13,6 +12,9 @@ export const FdCsvPlayerSchema = z.object({
     Opponent: z.string(),
     'Injury Indicator': z.string().optional(),
     'Injury Details': z.string().optional(),
+    // --- NEW: Optional advanced columns from user CSV ---
+    Volatility: z.string().transform(val => parseFloat(val)).optional(),
+    Tags: z.string().optional(),
 }).passthrough();
 export type FdCsvPlayer = z.infer<typeof FdCsvPlayerSchema>;
 
@@ -37,20 +39,49 @@ const StatProjectionsSchema = z.object({
     receptions: z.number().optional(),
     receivingYards: z.number().optional(),
     receivingTds: z.number().optional(),
-}).passthrough(); // Allow extra fields
+}).passthrough();
 
-export const VegasAndProjectionsResponseSchema = z.object({
+export const AdvancedPlayerMetricsResponseSchema = z.object({
     vegas: z.object({
         teamASpread: z.number(),
         gameTotal: z.number(),
     }),
-    projections: z.array(z.object({
+    playerMetrics: z.array(z.object({
         id: z.string(),
-        mean: StatProjectionsSchema,
-        ceiling: StatProjectionsSchema,
-        floorFpts: z.number(),
+        advancedStats: z.object({
+            airYards: z.number().optional(),
+            targetShare: z.number().optional(),
+            rushAttemptShare: z.number().optional(),
+            aDOT: z.number().optional(),
+        }).passthrough(),
+        statProjections: z.object({
+            mean: StatProjectionsSchema,
+            ceiling: StatProjectionsSchema,
+        }),
     })),
 });
+export type InferredAdvancedPlayerMetricsResponse = z.infer<typeof AdvancedPlayerMetricsResponseSchema>;
+
+
+// --- NEW: Schema for the compliant, feature-based ownership model ---
+export const OwnershipFeaturesResponseSchema = z.object({
+  players: z.array(z.object({
+    id: z.string(),
+    buzzScore: z.number(),
+    salaryTier: z.enum(['Premium', 'Mid-Range', 'Value']),
+    chalkRating: z.number(),
+    leverageScore: z.number(),
+    // Add computed fields that will be added later
+    flexOwnership: z.number().optional(),
+    mvpOwnership: z.number().optional(),
+    leverage: z.number().optional(),
+  })),
+  slateNotes: z.string(),
+});
+export type InferredOwnershipFeaturesResponse = z.infer<typeof OwnershipFeaturesResponseSchema>;
+
+
+// --- Legacy Schemas (Deprecated) ---
 
 const CorrelationItemSchema = z.object({
     playerId: z.string(),
@@ -60,7 +91,7 @@ const CorrelationItemSchema = z.object({
     })),
 });
 
-export const AdvancedMetricsResponseSchema = z.object({
+export const AdvancedMetricsResponseSchema_Legacy = z.object({
     metrics: z.array(z.object({
         id: z.string(),
         projectedUsage: z.enum(['Starter', 'Role Player', 'Backup', 'Unlikely']),
@@ -79,4 +110,66 @@ export const OwnershipResponseSchema = z.object({
     leverage: z.number(),
   })),
   slateNotes: z.string(),
+});
+
+// --- NEW: Schemas for Zero-Auth Data Adapters ---
+
+export const EspnCompetitorSchema = z.object({
+  id: z.string(),
+  abbreviation: z.string(),
+  homeAway: z.enum(['home', 'away']),
+});
+
+export const EspnEventSchema = z.object({
+    id: z.string(),
+    date: z.string(),
+    name: z.string(),
+    shortName: z.string(),
+    competitions: z.array(z.object({
+        competitors: z.array(EspnCompetitorSchema),
+        venue: z.object({
+            fullName: z.string(),
+            address: z.object({
+                city: z.string(),
+                state: z.string().optional(),
+            }),
+            capacity: z.number(),
+            grass: z.boolean(),
+            indoor: z.boolean(),
+        }),
+    })).min(1),
+});
+
+export const WeatherPointSchema = z.object({
+    properties: z.object({
+        forecastHourly: z.string(), // URL to the hourly forecast
+    }),
+});
+
+export const WeatherForecastSchema = z.object({
+    properties: z.object({
+        periods: z.array(z.object({
+            number: z.number(),
+            temperature: z.number(),
+            temperatureUnit: z.string(),
+            windSpeed: z.string(),
+            windDirection: z.string(),
+            shortForecast: z.string(),
+            probabilityOfPrecipitation: z.object({
+                value: z.number().nullable(),
+            }),
+        })).min(1),
+    }),
+});
+
+export const OpenMeteoForecastSchema = z.object({
+    latitude: z.number(),
+    longitude: z.number(),
+    hourly: z.object({
+        time: z.array(z.string()),
+        temperature_2m: z.array(z.number()),
+        precipitation_probability: z.array(z.number()),
+        wind_speed_10m: z.array(z.number()),
+        wind_direction_10m: z.array(z.number()),
+    }),
 });

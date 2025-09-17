@@ -1,4 +1,4 @@
-import { StatWeights, TunedModel, ModelDiscoveryReport, HistoricalGame, ValidationReport, SimulationParams } from '../types';
+import { StatWeights, TunedModel, ModelDiscoveryReport, HistoricalGame, ValidationReport, SimulationParams, CalibrationReport } from '../types';
 import { simulateGameDataScraping } from './gameSimulatorService';
 import { discoverOptimalModel } from './modelDiscoveryService';
 import { modelStore } from './modelStore';
@@ -6,10 +6,10 @@ import { MultivariateLinearRegression } from 'ml-regression';
 import { getHistoricalGamesToSimulate } from './historicalDataVaultService';
 import { generateContent } from './aiModelService';
 import { Type } from '@google/genai';
+import { generateCalibrationReport } from './calibrationService';
 
 const HISTORICAL_GAMES_TO_SIMULATE = getHistoricalGamesToSimulate();
 
-// This constant is now exported to be used by the dataManager for initial projection calculation.
 export const INITIAL_WEIGHTS: StatWeights = {
     passYds: 0.04, passTds: 4, interceptions: -1,
     rushYds: 0.1, rushTds: 6,
@@ -28,16 +28,11 @@ export const INITIAL_WEIGHTS: StatWeights = {
 
 const ALL_STAT_WEIGHT_KEYS = Object.keys(INITIAL_WEIGHTS) as (keyof StatWeights)[];
 
-/**
- * Calculates a player's predicted fantasy points based on a given model.
- * This is the core projection function, now fully refactored and hardened.
- */
 function calculatePredictedFdp(player: HistoricalGame['players'][0], weights: StatWeights, game: HistoricalGame): number {
     let score = 0;
     const { team, stats, advancedStats, matchupAdvantageScore } = player;
     const opponentAbbr = Object.keys(game.pregameContext.teamDna || {}).find(t => t !== team);
 
-    // 1. Apply weights to all player-level stats (raw and advanced)
     for (const key of ALL_STAT_WEIGHT_KEYS) {
         const value = (stats as any)?.[key] ?? (advancedStats as any)?.[key];
         if (value != null && weights[key] != null) {
@@ -45,7 +40,6 @@ function calculatePredictedFdp(player: HistoricalGame['players'][0], weights: St
         }
     }
 
-    // 2. Apply weights for team-level stats
     const teamMetrics = game.pregameContext.advancedTeamMetrics?.[team];
     if (teamMetrics) {
         for (const key of Object.keys(teamMetrics) as (keyof typeof teamMetrics)[]) {
@@ -56,7 +50,6 @@ function calculatePredictedFdp(player: HistoricalGame['players'][0], weights: St
         }
     }
 
-    // 3. Apply weights for opponent's defensive stats
     if (opponentAbbr) {
         const opponentMetrics = game.pregameContext.advancedTeamMetrics?.[opponentAbbr];
         if (opponentMetrics) {
@@ -65,22 +58,16 @@ function calculatePredictedFdp(player: HistoricalGame['players'][0], weights: St
         }
     }
     
-    // 4. Apply game-level situational weights
     const { strengthOfSchedule, weatherFactor, homeFieldAdvantageScore } = game.pregameContext;
     if (strengthOfSchedule != null && weights.strengthOfSchedule) score += strengthOfSchedule * weights.strengthOfSchedule;
     if (weatherFactor != null && weights.weatherFactor) score += weatherFactor * weights.weatherFactor;
     if (homeFieldAdvantageScore != null && weights.homeFieldAdvantageScore) score += homeFieldAdvantageScore * weights.homeFieldAdvantageScore;
 
-    // 5. Apply the Matchup Advantage Score as a final multiplier
     return score * (matchupAdvantageScore || 1.0);
 }
 
-/**
- * NEW: The Matchup Supremacy Engine's AI analysis step.
- * It analyzes all players in a batch of games and returns an enriched map.
- */
 async function analyzeMatchupImpact(games: HistoricalGame[]): Promise<Map<string, HistoricalGame>> {
-    const enrichedGamesMap = new Map<string, HistoricalGame>(games.map(g => [g.gameId, JSON.parse(JSON.stringify(g))])); // Deep copy
+    const enrichedGamesMap = new Map<string, HistoricalGame>(games.map(g => [g.gameId, JSON.parse(JSON.stringify(g))]));
     const allPlayers = games.flatMap(g => {
         const opponentAbbrs = Object.keys(g.pregameContext.teamDna || {});
         return g.players.map(p => {
@@ -95,7 +82,6 @@ async function analyzeMatchupImpact(games: HistoricalGame[]): Promise<Map<string
         });
     });
 
-    // To stay within token limits, we process in batches if needed
     if (allPlayers.length === 0) return enrichedGamesMap;
 
     const prompt = `
@@ -152,9 +138,6 @@ async function analyzeMatchupImpact(games: HistoricalGame[]): Promise<Map<string
     return enrichedGamesMap;
 }
 
-/**
- * The main orchestrator for the backtesting engine.
- */
 export async function runFullSimulation(
     params: SimulationParams,
     onProgress: (message: string, percentage: number) => void
@@ -164,8 +147,6 @@ export async function runFullSimulation(
 
     onProgress("Splitting data into training/validation sets...", 5);
     
-    // Seeded PRNG for deterministic shuffling, complying with MD-AL-001 (Anti-Leakage Wall).
-    // This ensures that train/validation splits are perfectly reproducible across runs.
     const createSeededRandom = (seed: number) => {
         let state = seed;
         return () => {
@@ -186,7 +167,6 @@ export async function runFullSimulation(
     const validationGamesInfo = shuffledGames.slice(0, validationSize);
     let historicalGames: HistoricalGame[] = [];
 
-    // DATA FORTRESS: Layer 2 (Cache) & Layer 4 (Full Scrape)
     onProgress("Fetching and caching historical game data...", 10);
     const allGamesInfo = [...trainingGamesInfo, ...validationGamesInfo];
     for (let i = 0; i < allGamesInfo.length; i++) {
@@ -195,7 +175,6 @@ export async function runFullSimulation(
         let gameData = await modelStore.getHistoricalGame(gameInfo.id);
         if (!gameData) {
             onProgress(`Simulating data for: ${gameInfo.description}...`, percentage);
-            // Proactive throttling to be a polite API consumer
             await new Promise(res => setTimeout(res, 1500));
             gameData = await simulateGameDataScraping(gameInfo.id, gameInfo.description);
             await modelStore.saveHistoricalGame(gameData);
@@ -213,11 +192,10 @@ export async function runFullSimulation(
     const discoveryReports: ModelDiscoveryReport[] = [];
     for (let i = 0; i < trainingGames.length; i++) {
         const gameData = trainingGames[i];
-        if(!gameData) continue; // Skip if a game failed to load
+        if(!gameData) continue;
         const percentage = 60 + Math.round((i / trainingGames.length) * 20);
         try {
             onProgress(`Reverse-engineering model for: ${gameData.description}...`, percentage);
-            // Proactive throttling
             await new Promise(res => setTimeout(res, 1500));
             const report = await discoverOptimalModel(gameData);
             discoveryReports.push(report);
@@ -240,11 +218,10 @@ export async function runFullSimulation(
     return {
         trainingSetSize: trainingGames.length,
         validationSetSize: validationGames.length,
-        models: validatedModels.sort((a, b) => a.performance.validationMae - b.performance.validationMae),
+        models: validatedModels.sort((a, b) => (a.performance.calibration?.mae ?? Infinity) - (b.performance.calibration?.mae ?? Infinity)),
     };
 }
 
-// --- MODEL CREATION ---
 function createCandidateModels(reports: ModelDiscoveryReport[], trainingGames: HistoricalGame[], params: SimulationParams): TunedModel[] {
     const models: TunedModel[] = [];
     const rawWeightKeys = ['passYds', 'passTds', 'interceptions', 'rushYds', 'rushTds', 'receptions', 'recYds', 'recTds', 'fumblesLost'] as const;
@@ -282,11 +259,10 @@ function createCandidateModels(reports: ModelDiscoveryReport[], trainingGames: H
         models.push({ name: 'Averaged Hindsight Model (AI-Based)', weights: averageWeights(allHindsightWeights), sourceDescription: `Averaged from ${reports.length} AI-analyzed games.` } as TunedModel);
     }
     
-    // Ensemble the top K models based on their performance on the *training* set as a heuristic
     if (models.length > 1) {
         const trainingValidatedModels = validateModels(models, trainingGames);
         const topModels = trainingValidatedModels
-            .sort((a,b) => a.performance.validationMae - b.performance.validationMae)
+            .sort((a,b) => (a.performance.calibration?.mae ?? Infinity) - (b.performance.calibration?.mae ?? Infinity))
             .slice(0, params.topKEnsemble);
 
         models.push({
@@ -299,25 +275,33 @@ function createCandidateModels(reports: ModelDiscoveryReport[], trainingGames: H
     return models.map(m => ({ ...m, id: `${m.name.replace(/\s/g, '_')}_${Date.now()}`, createdAt: new Date().toISOString(), performance: { mae: 0 } }));
 }
 
-// --- MODEL VALIDATION ---
-function validateModels(candidateModels: TunedModel[], validationGames: HistoricalGame[]): (TunedModel & { performance: { validationMae: number } })[] {
+function validateModels(candidateModels: TunedModel[], validationGames: HistoricalGame[]): TunedModel[] {
     return candidateModels.map(model => {
-        let totalAbsoluteError = 0, playerCount = 0;
+        const predictions: { predicted: number, actual: number }[] = [];
         for (const game of validationGames) {
              if(!game) continue;
             for (const player of game.players) {
                 if (player.actualFdp > 0) {
-                    const predictedFdp = calculatePredictedFdp(player, model.weights, game);
-                    totalAbsoluteError += Math.abs(predictedFdp - player.actualFdp);
-                    playerCount++;
+                    predictions.push({
+                        predicted: calculatePredictedFdp(player, model.weights, game),
+                        actual: player.actualFdp,
+                    });
                 }
             }
         }
-        return { ...model, performance: { ...model.performance, validationMae: playerCount > 0 ? totalAbsoluteError / playerCount : Infinity } };
+        
+        const calibration = generateCalibrationReport(predictions);
+        return { 
+            ...model, 
+            performance: { 
+                ...model.performance, 
+                validationMae: calibration.mae, // For sorting backwards compatibility
+                calibration 
+            }
+        };
     });
 }
 
-// --- HELPER FUNCTIONS ---
 function buildFeatureMatrix(games: HistoricalGame[], keys: readonly (keyof StatWeights)[]) {
     const X: number[][] = [], y: number[] = [];
     for (const game of games) {
@@ -354,13 +338,11 @@ function buildCorrelationFeatureMatrix(games: HistoricalGame[], rawKeys: readonl
 
 function buildWeightsFromCoefficients(base: StatWeights, coefficients: number[][], keys: readonly (keyof StatWeights)[]) {
     const newWeights = { ...base };
-    // The regression library returns a 2D array for coefficients, so we access the first element.
     const coeffArray = coefficients[0]; 
     if (!coeffArray) return newWeights;
 
     coeffArray.forEach((coeff, i) => {
         if (keys[i]) {
-            // ANTI-NAN SANITIZATION LAYER
             newWeights[keys[i]] = isNaN(coeff) ? 0 : coeff;
         }
     });

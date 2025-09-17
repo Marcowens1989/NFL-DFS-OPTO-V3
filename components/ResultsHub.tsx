@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Lineup, Player, BacktestReport } from '../types';
 import BacktestResultsDisplay from './BacktestResultsDisplay';
+import ExportIcon from './icons/ExportIcon';
 
 interface ResultsHubProps {
   lineups: Lineup[] | null;
@@ -9,7 +10,7 @@ interface ResultsHubProps {
 }
 
 type Tab = 'lineups' | 'exposures' | 'backtest';
-type SortableKeys = 'totalFpts' | 'totalCeilingFpts' | 'totalSalary' | 'correlationScore' | 'roiScore' | 'leverageScore';
+type SortableKeys = 'expectedValue' | 'duplicationRisk' | 'totalFpts' | 'totalCeilingFpts' | 'totalSalary' | 'correlationScore' | 'leverageScore';
 
 interface SortConfig {
   key: SortableKeys | null;
@@ -66,7 +67,7 @@ const ExposureView: React.FC<{ lineups: Lineup[], players: Player[] }> = ({ line
 };
 
 const LineupsTable: React.FC<{ lineups: Lineup[] }> = ({ lineups }) => {
-    const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'totalFpts', direction: 'descending' });
+    const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'expectedValue', direction: 'descending' });
 
     const sortedLineups = useMemo(() => {
         let sortableItems = [...lineups];
@@ -99,17 +100,12 @@ const LineupsTable: React.FC<{ lineups: Lineup[] }> = ({ lineups }) => {
       return `px-2 py-2 text-right cursor-pointer transition-colors ${sortConfig.key === key ? 'text-white' : 'text-gray-400 hover:text-white'}`;
     }
 
-    const getCorrelationColor = (score: number) => {
-      if (score > 0.5) return 'text-green-400 font-bold';
-      if (score < -0.5) return 'text-red-400 font-bold';
-      return 'text-gray-300';
+    const getDupRiskColor = (risk: number) => {
+      if (risk > 10) return 'text-red-400 font-bold';
+      if (risk > 2) return 'text-yellow-400';
+      return 'text-green-400';
     }
     
-    const getLeverageColor = (score: number) => {
-      if (score >= 85) return 'text-green-400 font-bold';
-      if (score >= 50) return 'text-yellow-400';
-      return 'text-red-400';
-    }
 
     return (
         <div className="overflow-auto max-h-[400px]">
@@ -118,10 +114,10 @@ const LineupsTable: React.FC<{ lineups: Lineup[] }> = ({ lineups }) => {
                     <tr>
                         <th className="px-2 py-2 text-center">#</th>
                         <th className="px-2 py-2">Lineup</th>
+                        <th className={getHeaderClass('expectedValue')} onClick={() => requestSort('expectedValue')}>EV {getSortIndicator('expectedValue')}</th>
+                        <th className={getHeaderClass('duplicationRisk')} onClick={() => requestSort('duplicationRisk')}>Dupes {getSortIndicator('duplicationRisk')}</th>
                         <th className={getHeaderClass('totalFpts')} onClick={() => requestSort('totalFpts')}>Mean {getSortIndicator('totalFpts')}</th>
                         <th className={getHeaderClass('totalCeilingFpts')} onClick={() => requestSort('totalCeilingFpts')}>Ceiling {getSortIndicator('totalCeilingFpts')}</th>
-                        <th className={getHeaderClass('correlationScore')} onClick={() => requestSort('correlationScore')}>Corr. {getSortIndicator('correlationScore')}</th>
-                        <th className={getHeaderClass('leverageScore')} onClick={() => requestSort('leverageScore')}>Leverage {getSortIndicator('leverageScore')}</th>
                         <th className={getHeaderClass('totalSalary')} onClick={() => requestSort('totalSalary')}>Salary {getSortIndicator('totalSalary')}</th>
                     </tr>
                 </thead>
@@ -137,14 +133,12 @@ const LineupsTable: React.FC<{ lineups: Lineup[] }> = ({ lineups }) => {
                                     <span className="font-bold text-gray-500">FLEX:</span> {lineup.flex.map(p => p.name).join(', ')}
                                 </div>
                             </td>
-                            <td className="px-2 py-2 text-right font-bold text-green-400">{lineup.totalFpts.toFixed(2)}</td>
-                            <td className="px-2 py-2 text-right font-bold text-cyan-400">{lineup.totalCeilingFpts.toFixed(2)}</td>
-                            <td className={`px-2 py-2 text-right ${getCorrelationColor(lineup.correlationScore)}`}>
-                                {lineup.correlationScore.toFixed(2)}
+                            <td className="px-2 py-2 text-right font-bold text-green-400">{lineup.expectedValue.toFixed(2)}</td>
+                            <td className={`px-2 py-2 text-right ${getDupRiskColor(lineup.duplicationRisk)}`}>
+                                {lineup.duplicationRisk.toFixed(2)}
                             </td>
-                            <td className={`px-2 py-2 text-right ${getLeverageColor(lineup.leverageScore)}`}>
-                                {lineup.leverageScore.toFixed(1)}
-                            </td>
+                            <td className="px-2 py-2 text-right">{lineup.totalFpts.toFixed(2)}</td>
+                            <td className="px-2 py-2 text-right text-cyan-400">{lineup.totalCeilingFpts.toFixed(2)}</td>
                             <td className="px-2 py-2 text-right">${lineup.totalSalary.toLocaleString()}</td>
                         </tr>
                     ))}
@@ -162,15 +156,32 @@ const ResultsHub: React.FC<ResultsHubProps> = ({ lineups, players, backtestRepor
   const hasReport = backtestReport !== null;
 
   useEffect(() => {
-    // If a new backtest report arrives, make it the active view.
     if (hasReport) {
         setActiveTab('backtest');
     } 
-    // If lineups are generated (and no new report), switch to lineups view.
     else if (hasLineups) {
         setActiveTab('lineups');
     }
   }, [hasLineups, hasReport]);
+  
+  const handleExport = () => {
+    if (!lineups) return;
+    const header = "MVP,FLEX,FLEX,FLEX,FLEX\n";
+    const csv = lineups.map(l => 
+        `${l.mvp.name},${l.flex.map(p => p.name).join(',')}`
+    ).join('\n');
+    
+    const blob = new Blob([header + csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `fanduel_lineups_${Date.now()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
 
   const getTabClass = (tab: Tab) => {
     return `px-4 py-2 text-sm font-medium transition-colors ${activeTab === tab ? 'border-b-2 border-gray-500 text-white' : 'text-gray-400 hover:text-white'}`;
@@ -186,11 +197,18 @@ const ResultsHub: React.FC<ResultsHubProps> = ({ lineups, players, backtestRepor
 
   return (
     <div className="bg-gray-900 border border-gray-700 p-4 rounded-lg h-full flex flex-col">
-        <div className="flex justify-between items-baseline mb-4 pb-2 border-b-2 border-gray-500">
+        <div className="flex justify-between items-center mb-4 pb-2 border-b-2 border-gray-500">
             <h3 className="text-xl font-bold text-white">
                 {activeTab === 'backtest' ? 'Backtest Report' : 'Generated Results'}
             </h3>
-            {hasLineups && activeTab !== 'backtest' && <p className="text-sm text-gray-400">{lineups.length} Lineups</p>}
+            <div className="flex items-center gap-2">
+                {hasLineups && <p className="text-sm text-gray-400">{lineups.length} Lineups</p>}
+                {hasLineups && activeTab === 'lineups' && 
+                    <button onClick={handleExport} className="p-1.5 rounded-md hover:bg-gray-700" title="Export to CSV">
+                        <ExportIcon />
+                    </button>
+                }
+            </div>
         </div>
         
         <div className="flex border-b border-gray-700 mb-4">

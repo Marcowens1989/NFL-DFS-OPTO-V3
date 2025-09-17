@@ -8,7 +8,8 @@ self.onmessage = async (event) => {
   try {
     if (type === 'GENERATE_LINEUPS') {
       const { players, lockedPlayers, excludedIds, numberOfLineups, salaryCap, stackingRules, optimizationTarget } = payload;
-      const lineups = generateMultipleLineups(
+      // FIX: Re-added 'await' as generateMultipleLineups is an async function. This prevents a broken state.
+      const lineups = await generateMultipleLineups(
         players,
         lockedPlayers,
         new Set(excludedIds), // Re-hydrate the Set

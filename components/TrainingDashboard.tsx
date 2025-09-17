@@ -7,6 +7,19 @@ interface TrainingDashboardProps {
     isTraining: boolean; // NEW PROP to control animation
 }
 
+const PlaceholderChart: React.FC<{ title: string, description: string }> = ({ title, description }) => (
+    <div className="h-48 bg-gray-900/50 p-4 rounded-lg flex flex-col justify-between border border-gray-700">
+        <div>
+            <h4 className="font-semibold text-gray-300">{title}</h4>
+            <p className="text-xs text-gray-500">{description}</p>
+        </div>
+        <div className="flex-grow flex items-center justify-center">
+            <p className="text-gray-600 text-sm italic">Chart placeholder</p>
+        </div>
+    </div>
+);
+
+
 const PerformanceChart: React.FC<{ models: TunedModel[] }> = ({ models }) => {
     const chartData = useMemo(() => {
         if (models.length < 2) return null;
@@ -38,7 +51,7 @@ const PerformanceChart: React.FC<{ models: TunedModel[] }> = ({ models }) => {
 
     if (!chartData) {
         return (
-            <div className="h-48 flex items-center justify-center text-gray-500 text-sm italic">
+            <div className="h-48 flex items-center justify-center text-gray-500 text-sm italic border border-gray-700 bg-gray-900/50 rounded-lg">
                 {models.length > 0 ? "Save at least two models to see performance history." : "No saved models to chart."}
             </div>
         );
@@ -48,7 +61,7 @@ const PerformanceChart: React.FC<{ models: TunedModel[] }> = ({ models }) => {
     const maxMae = Math.max(...chartData.map(d => d.performance.validationMae!));
 
     return (
-        <div className="h-48 bg-gray-900/50 p-4 rounded-lg relative">
+        <div className="h-48 bg-gray-900/50 p-4 rounded-lg relative border border-gray-700">
             {/* Y-Axis Labels */}
             <span className="absolute top-2 left-2 text-xs text-gray-500">{maxMae.toFixed(4)}</span>
             <span className="absolute bottom-2 left-2 text-xs text-gray-500">{minMae.toFixed(4)}</span>
@@ -85,9 +98,9 @@ const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ logEntries, model
         <div className="border-t border-gray-700 pt-6">
             <h2 className="text-2xl font-bold mb-2 text-white">Oracle's Heartbeat: Continuous Training Dashboard</h2>
             <p className="text-sm text-gray-400 mb-4 max-w-3xl">
-                The key metric is <strong>Validation MAE (Mean Absolute Error)</strong>, which measures how many fantasy points a model's prediction was off by, on average. For example, if the average player scores 15 FDP, an MAE of 3 means the model is off by about 20% per prediction. A lower MAE means a more accurate model.
+                The key metric is <strong>Validation MAE (Mean Absolute Error)</strong>, which measures how many fantasy points a model's prediction was off by, on average. A lower MAE means a more accurate model.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-900 p-4 rounded-lg border border-gray-700">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-black p-4 rounded-lg border border-gray-700">
                 <div>
                     <h3 className="text-lg font-semibold text-gray-300 mb-2">Performance History <span className="text-xs text-gray-500">(Lower MAE is Better)</span></h3>
                     <PerformanceChart models={models} />
@@ -105,6 +118,14 @@ const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ logEntries, model
                         ))}
                     </div>
                 </div>
+            </div>
+            <div className="mt-6">
+                 <h3 className="text-lg font-semibold text-gray-300 mb-2">Simulation Analysis</h3>
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <PlaceholderChart title="EV Simulation" description="Expected Value distribution of generated lineups." />
+                    <PlaceholderChart title="Duplication Analysis" description="Histogram of estimated lineup duplication rates." />
+                    <PlaceholderChart title="Model Calibration" description="PIT & CRPS plots for the currently active model." />
+                 </div>
             </div>
         </div>
     );

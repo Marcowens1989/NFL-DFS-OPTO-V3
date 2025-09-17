@@ -15,10 +15,41 @@ export interface StatProjections {
   extraPoints?: number; // For K
 }
 
+// --- NEW: Types for Zero-Auth Data Scaffolding ---
+export interface GameInfo {
+    id: string;
+    date: string;
+    name: string;
+    shortName: string;
+    venue: {
+        fullName: string;
+        city: string;
+        state: string;
+        capacity: number;
+        grass: boolean;
+        indoor: boolean;
+    };
+    competitors: {
+        home: { id: string; abbrev: string; };
+        away: { id: string; abbrev: string; };
+    };
+    geo?: { lat: number, lon: number };
+}
+
+export interface WeatherData {
+    temperature: number; // in Fahrenheit
+    windSpeed: string; // e.g., "5 to 10 mph"
+    windDirection: string; // e.g., "SW"
+    shortForecast: string; // e.g., "Sunny", "Chance of Rain"
+    precipitationChance: number; // as percentage
+    source: 'NWS' | 'Open-Meteo';
+}
+
+
 // The core Player interface, now enhanced with advanced metrics
 export interface Player {
   id: string;
-  name: string;
+  name:string;
   position: string;
   salary: number;
   fpts: number; // Represents the MEAN projection, dynamically calculated
@@ -36,6 +67,22 @@ export interface Player {
     mean: StatProjections;
     ceiling: StatProjections;
   };
+  
+  advancedStats?: {
+      airYards?: number;
+      redZoneTouches?: number;
+      targetShare?: number;
+      rushAttemptShare?: number;
+      aDOT?: number;
+  };
+
+  // --- NEW: Ownership Features for Statistical Modeling ---
+  ownershipFeatures?: {
+    buzzScore: number; // 1-100 score based on public sentiment/news
+    salaryTier: 'Premium' | 'Mid-Range' | 'Value';
+    chalkRating: number; // 1-100, how "obvious" a play is
+    leverageScore: number; // GPP leverage score (1-100)
+  };
 
   // --- NEW: Game & Scenario Modeling ---
   vegas: {
@@ -43,6 +90,11 @@ export interface Player {
       total: number;
       impliedTeamTotal: number;
   } | null;
+
+  // --- NEW: Enriched data from pre-lock pipeline ---
+  gameInfo?: GameInfo;
+  weather?: WeatherData;
+
 
   scenarioFpts: {
       ceiling: number; // 90th percentile outcome, dynamically calculated
@@ -57,6 +109,10 @@ export interface Player {
   sentimentSummary: string;
   playerDnaReport?: string; // For on-demand AI deep-dive analysis
   leverage: number; // AI-generated GPP leverage score (1-100)
+  
+  // --- NEW: UI/UX Features ---
+  volatility: number; // Rolling stdev of FDP, 1-100 scale
+  tags: string; // Comma-separated tags like "Contrarian", "Chalk", "Value"
 
   // This is parsed from the FD file but is not used in the 2025 rules where MVP salary = FLEX salary
   mvpSalary: number;
@@ -75,6 +131,10 @@ export interface Lineup {
   leverageScore: number; // Average leverage score of players in the lineup.
   stackType: string; // Team stack (e.g., 3-3, 4-2).
   roiScore: number; // Projected ROI based on FDP variance and ownership.
+
+  // --- NEW: Contest-True Metrics ---
+  expectedValue: number;    // Contest EV, accounting for dupes
+  duplicationRisk: number;  // Estimated number of times this lineup will be duplicated
 }
 
 export enum PlayerStatus {
@@ -275,6 +335,14 @@ export interface ModelDiscoveryReport {
     };
 }
 
+// --- NEW: For Calibration & Validation Gates ---
+export interface CalibrationReport {
+  mae: number;
+  crps: number; // Continuous Ranked Probability Score (placeholder)
+  pitKsPValue: number; // Probability Integral Transform Kolmogorov-Smirnov test p-value (placeholder)
+  p50Coverage: number; // % of actuals that fell within the P50 quantile (placeholder)
+}
+
 export interface TunedModel {
   id: string;
   name: string;
@@ -284,6 +352,7 @@ export interface TunedModel {
     mae: number; // Mean Absolute Error on the training set
     gamesSimulated?: number;
     validationMae?: number; // Mean Absolute Error on the BLIND validation set
+    calibration?: CalibrationReport; // NEW: Detailed validation metrics
   };
   sourceDescription: string;
   gameScript?: 'Neutral' | 'Shootout' | 'Defensive Struggle' | 'Blowout';
@@ -300,7 +369,7 @@ export interface TunedModel {
 export interface ValidationReport {
     trainingSetSize: number;
     validationSetSize: number;
-    models: (TunedModel & { performance: { validationMae: number } })[]; // Ensure validationMae is present
+    models: TunedModel[];
 }
 
 export interface SimulationParams {
@@ -370,4 +439,13 @@ export interface BacktestReport {
             percentage: number;
         }
     }
+}
+
+// --- NEW: For Run Artifacts ---
+export interface RunManifest {
+    runId: string;
+    timestamp: string;
+    settings: OptimizerSettings;
+    activeModelId: string | null;
+    playerDataChecksum: string; // SHA-256 hash of the input player data
 }

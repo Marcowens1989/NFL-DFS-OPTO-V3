@@ -1,13 +1,14 @@
 import { Player, PlayerStatus, StatProjections } from '../types';
-import { getAIOwnershipAnalysis } from './ownership';
+import { OwnershipAnalysisResult, getAIOwnershipAnalysis } from './ownership';
 import { analyzePlayerValue } from './valueAnalyzer';
 import { getPlayerStatusesFromSleeper } from './externalApis';
 import { generateContent } from './aiModelService';
 import { Type } from '@google/genai';
-import { calculateFptsFromProjections } from './projectionService';
+import { projectPlayerStats, calculateFptsFromProjections } from './projectionService';
 import { INITIAL_WEIGHTS } from './historicalSimulationService';
-import { FdCsvPlayerSchema, VegasAndProjectionsResponseSchema, AdvancedMetricsResponseSchema } from './schemas';
+import { FdCsvPlayerSchema, AdvancedPlayerMetricsResponseSchema, InferredAdvancedPlayerMetricsResponse, InferredOwnershipFeaturesResponse } from './schemas';
 import { logger } from './loggingService';
+import { runPreLockPipeline } from './data/pipeline';
 
 export interface UploadData {
   players: Player[];
@@ -15,16 +16,6 @@ export interface UploadData {
   validationReport: string;
   slateNotes: string;
 }
-
-// --- Utility for Batching ---
-function batch<T>(items: T[], batchSize: number): T[][] {
-  const batches: T[][] = [];
-  for (let i = 0; i < items.length; i += batchSize) {
-    batches.push(items.slice(i, i + batchSize));
-  }
-  return batches;
-}
-
 
 // --- Core Data Pipeline Steps ---
 
@@ -44,7 +35,6 @@ async function parseCsv(file: File): Promise<Player[]> {
   return lines.slice(1).map((line, index) => {
     const data = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(field => field.trim().replace(/"/g, '')) || [];
     
-    // Create an object from the row data to validate against the schema
     const rowObject: { [key: string]: string } = {};
     header.forEach((h, i) => {
         rowObject[h] = data[i];
@@ -80,6 +70,8 @@ async function parseCsv(file: File): Promise<Player[]> {
       projectedUsage: 'Backup',
       sentimentSummary: 'No specific news.',
       leverage: 0,
+      volatility: p.Volatility || 50, // Default to 50 if not present
+      tags: p.Tags || '',
     };
   }).filter((p): p is Player => p !== null);
 }
@@ -111,163 +103,59 @@ async function validatePlayersWithAI(players: Player[]): Promise<{ playersToExcl
   }
 }
 
-// --- NEW: Granular AI Analysis Functions ---
-interface VegasAndProjectionsResult {
-    vegas: { teamASpread: number; gameTotal: number; };
-    projections: {
-        id: string;
-        mean: StatProjections;
-        ceiling: StatProjections;
-        floorFpts: number;
-    }[];
-}
-
-
-async function getVegasAndProjectionsAI(players: Player[]): Promise<VegasAndProjectionsResult | null> {
-    if (players.length === 0) return null;
+// --- NEW: Compliant AI function for generating features ---
+async function getAdvancedPlayerMetricsAI(players: Player[]): Promise<InferredAdvancedPlayerMetricsResponse | null> {
+    if (players.length === 0) {
+        return null;
+    }
     const team = players[0]?.team;
-    if (!team) return null;
-
     const playerList = players.map(p => ({ id: p.id, name: p.name, position: p.position }));
+
     const prompt = `
-        You are a world-class sports data analyst. For the NFL Showdown game involving the ${team}, provide two things:
-        1.  **Vegas Odds**: The current point spread for ${team} and the game total.
-        2.  **Granular Projections**: For EACH player provided, provide their detailed statistical projections for their **mean** and **90th percentile ceiling** outcomes. Also provide a single number for their **10th percentile floor** fantasy points.
+        You are a world-class sports data analyst for the NFL Showdown game involving the ${team}.
+        Provide a single JSON object containing two top-level keys: "vegas" and "playerMetrics".
         
-        Return a single, valid JSON object according to the schema. Omit any stat that is not applicable for a player's position (e.g., passing yards for a WR).
+        1. "vegas": An object with "teamASpread" (number, for the first team alphabetically) and "gameTotal" (number).
+        2. "playerMetrics": An array of objects. For EACH player, provide:
+            - "id" (string, must match input)
+            - "advancedStats": An object with your best estimates for pre-lock metrics: "airYards", "targetShare", "rushAttemptShare", "aDOT".
+            - "statProjections": An object with your best estimates for "mean" and "ceiling" outcomes for all applicable statistical categories (e.g., passingYards, rushingTds, receptions).
 
-        Players: ${JSON.stringify(playerList)}
+        Return ONLY the valid JSON object.
     `;
-
-    const statProjectionSchema = {
-        type: Type.OBJECT,
-        properties: {
-            passingYards: { type: Type.NUMBER }, passingTds: { type: Type.NUMBER }, interceptions: { type: Type.NUMBER },
-            rushingYards: { type: Type.NUMBER }, rushingTds: { type: Type.NUMBER },
-            receptions: { type: Type.NUMBER }, receivingYards: { type: Type.NUMBER }, receivingTds: { type: Type.NUMBER },
-        },
-        nullable: true
-    };
     
-    const responseSchema = {
-        type: Type.OBJECT,
-        properties: {
-            vegas: {
-                type: Type.OBJECT,
-                properties: { teamASpread: { type: Type.NUMBER }, gameTotal: { type: Type.NUMBER } },
-                required: ['teamASpread', 'gameTotal']
-            },
-            projections: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        id: { type: Type.STRING },
-                        mean: statProjectionSchema,
-                        ceiling: statProjectionSchema,
-                        floorFpts: { type: Type.NUMBER },
-                    },
-                    required: ['id', 'mean', 'ceiling', 'floorFpts']
-                }
-            }
-        },
-        required: ['vegas', 'projections']
-    };
+    const responseSchema = AdvancedPlayerMetricsResponseSchema;
 
     try {
-        const responseText = await generateContent(prompt, { responseSchema }, 120000, 2);
-        const parsedJson = JSON.parse(responseText);
-        const validation = VegasAndProjectionsResponseSchema.safeParse(parsedJson);
-        if (!validation.success) {
-            logger.error("Zod validation failed for Vegas/Projections", { error: validation.error.flatten(), data: parsedJson });
-            throw new Error("AI response for projections failed validation.");
-        }
-        return validation.data;
-    } catch (error) {
-        logger.error("Vegas & Granular Projections AI Error:", { error });
-        throw error;
-    }
-}
-
-interface AdvancedMetricsResult {
-    metrics: {
-        id: string;
-        projectedUsage: 'Starter' | 'Role Player' | 'Backup' | 'Unlikely';
-        sentimentSummary: string;
-        coordinatorTendency: 'pass-heavy' | 'run-heavy' | 'balanced';
-        blitzRateDefense: number;
-    }[];
-    correlations: {playerId: string, correlatedPlayers: {playerId: string, coefficient: number}[]}[];
-}
-
-async function getAdvancedMetricsAndCorrelationsAI(players: Player[]): Promise<AdvancedMetricsResult | null> {
-    if (players.length === 0) return null;
-    const playerList = players.map(p => ({ id: p.id, name: p.name, team: p.team }));
-    const prompt = `
-        You are a DFS data analyst. For each player provided, return their projected usage, a 1-sentence sentiment summary, their team's offensive coordinator tendency, and their opponent's defensive blitz rate.
-        Also, generate player correlations. The "correlations" key should be an array of objects. Each object must have a "playerId" (string) and a "correlatedPlayers" (array of objects). Each object in "correlatedPlayers" must have a "playerId" (string) and a "coefficient" (number).
-        Example: "correlations": [{ "playerId": "p1", "correlatedPlayers": [{ "playerId": "p2", "coefficient": 0.5 }] }]
-        Return a single JSON object.
-
-        Players: ${JSON.stringify(playerList)}
-    `;
-
-     const responseSchema = {
-        type: Type.OBJECT,
-        properties: {
-            metrics: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        id: { type: Type.STRING },
-                        projectedUsage: { type: Type.STRING, enum: ['Starter', 'Role Player', 'Backup', 'Unlikely'] },
-                        sentimentSummary: { type: Type.STRING },
-                        coordinatorTendency: { type: Type.STRING, enum: ['pass-heavy', 'run-heavy', 'balanced'] },
-                        blitzRateDefense: { type: Type.NUMBER },
-                    },
-                     required: ['id', 'projectedUsage', 'sentimentSummary', 'coordinatorTendency', 'blitzRateDefense']
-                }
-            },
-            correlations: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        playerId: { type: Type.STRING },
-                        correlatedPlayers: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    playerId: { type: Type.STRING },
-                                    coefficient: { type: Type.NUMBER }
-                                },
-                                required: ['playerId', 'coefficient']
-                            }
-                        }
-                    },
-                    required: ['playerId', 'correlatedPlayers']
-                }
-            }
-        },
-        required: ['metrics', 'correlations']
-    };
-
-     try {
         const responseText = await generateContent(prompt, { responseSchema }, 180000, 2);
         const parsedJson = JSON.parse(responseText);
-        const validation = AdvancedMetricsResponseSchema.safeParse(parsedJson);
+        const validation = responseSchema.safeParse(parsedJson);
         if (!validation.success) {
-            logger.error("Zod validation failed for Advanced Metrics", { error: validation.error.flatten(), data: parsedJson });
+            logger.error("Zod validation failed for Advanced Player Metrics", { error: validation.error.flatten(), data: parsedJson });
             throw new Error("AI response for advanced metrics failed validation.");
         }
         return validation.data;
     } catch (error) {
-        logger.error("Advanced Metrics & Correlations AI Error:", { error });
-        throw error;
+        logger.error("Advanced Metrics AI Error:", { error });
+        throw error; // Re-throw to be caught by Promise.all
     }
 }
+
+// --- NEW: Local calculation step ---
+function applyModelProjections(players: Player[]): Player[] {
+    return players.map(p => {
+        const { meanFpts, ceilingFpts } = projectPlayerStats(p.advancedStats, INITIAL_WEIGHTS);
+        return {
+            ...p,
+            fpts: meanFpts,
+            scenarioFpts: {
+                ...p.scenarioFpts,
+                ceiling: ceilingFpts,
+            }
+        }
+    })
+}
+
 
 export async function getPlayerDnaReport(player: Player): Promise<string> {
     const prompt = `
@@ -298,150 +186,103 @@ export async function getPlayerDnaReport(player: Player): Promise<string> {
 export async function handleFileUpload(file: File, setLoadingStatus: (status: string) => void): Promise<UploadData> {
   setLoadingStatus("Parsing CSV...");
   let basePlayers = await parseCsv(file);
-  const playerMap = new Map(basePlayers.map(p => [p.id, { ...p }]));
   
-  const reportParts: string[] = [];
+  setLoadingStatus("Fetching game data & weather...");
+  const { enrichedPlayers, pipelineReport } = await runPreLockPipeline(basePlayers);
+  basePlayers = enrichedPlayers;
+  const reportParts: string[] = [pipelineReport];
 
-  // --- Validation Waterfall ---
-  setLoadingStatus("Verifying injuries from CSV...");
+  setLoadingStatus("Verifying injuries...");
   const initialStatuses: Record<string, PlayerStatus> = {};
   basePlayers.forEach(p => {
     const status = p.injuryStatus?.toUpperCase();
     initialStatuses[p.id] = (status === 'IR' || status === 'O' || status === 'OUT') ? PlayerStatus.EXCLUDED : PlayerStatus.INCLUDED;
   });
 
-  setLoadingStatus("Verifying injuries (Sleeper API)...");
   const { sleeperStatuses, playersToAICheck, sleeperReport } = await getPlayerStatusesFromSleeper(basePlayers, initialStatuses);
   reportParts.push(sleeperReport);
-
-  // Merge Sleeper statuses
   Object.keys(sleeperStatuses).forEach(id => initialStatuses[id] = sleeperStatuses[id]);
 
-  // --- Parallel AI Analysis (Now Fully Resilient with Batching) ---
   setLoadingStatus("Running AI analysis...");
   
-  const playerBatches = batch(basePlayers, 15);
-
   const [
     aiValidationResult,
     ownershipResult,
-    vegasAndProjectionsBatchResults,
-    advancedMetricsBatchResults
+    advancedMetricsResult
   ] = await Promise.all([
     validatePlayersWithAI(playersToAICheck).catch(err => {
-        logger.warn("AI validation call failed but we are continuing.", { error: err });
         reportParts.push(`Warning: AI player validation failed. Error: ${err.message}`);
         return { playersToExclude: new Set(), validationSummary: "AI validation call failed." };
     }),
     getAIOwnershipAnalysis(basePlayers).catch(err => {
-        logger.warn("AI ownership call failed but we are continuing.", { error: err });
         reportParts.push(`Warning: Could not load AI ownership. Using defaults. Error: ${err.message}`);
         return null;
     }),
-    Promise.all(playerBatches.map(b => getVegasAndProjectionsAI(b))).catch(err => {
-        logger.warn("One or more Vegas & projections calls failed but we are continuing.", { error: err });
-        reportParts.push(`Warning: Could not load AI projections. Using FPPG from CSV. Error: ${err.message}`);
-        return [];
+    getAdvancedPlayerMetricsAI(basePlayers).catch(err => {
+        reportParts.push(`Warning: Could not load AI advanced metrics. Projections will be based on FPPG from CSV. Error: ${err.message}`);
+        return null;
     }),
-    Promise.all(playerBatches.map(b => getAdvancedMetricsAndCorrelationsAI(b))).catch(err => {
-        logger.warn("One or more advanced metrics calls failed but we are continuing.", { error: err });
-        reportParts.push(`Warning: Could not load advanced metrics. Using defaults. Error: ${err.message}`);
-        return [];
-    })
   ]);
 
-  // --- Assemble Final Player Data ---
   setLoadingStatus("Assembling player profiles...");
 
-  // Process AI validation (Safe access)
   if (aiValidationResult?.validationSummary) reportParts.push(aiValidationResult.validationSummary);
   aiValidationResult?.playersToExclude.forEach(id => initialStatuses[id] = PlayerStatus.EXCLUDED);
 
   const finalStatuses = initialStatuses;
   const slateNotes = ownershipResult?.slateNotes ?? "AI ownership analysis was unavailable.";
   
-  // Create maps for efficient lookup (Safe access)
-  const ownershipMap = ownershipResult ? new Map(ownershipResult.players.map(p => [p.id, p])) : new Map();
-  
-  // MERGE BATCHED RESULTS
-  const projectionsMap = new Map<string, VegasAndProjectionsResult['projections'][0]>();
-  vegasAndProjectionsBatchResults?.forEach(result => {
-      result?.projections.forEach(p => projectionsMap.set(p.id, p));
-  });
+  const finalPlayerMap: Map<string, Player> = new Map(basePlayers.map(p => [p.id, { ...p }]));
 
-  const metricsMap = new Map<string, any>();
-  const correlationsMap = new Map<string, Record<string, number>>();
-  if (advancedMetricsBatchResults) {
-    for (const result of advancedMetricsBatchResults) {
-        if (!result) continue;
-        result.metrics.forEach(m => metricsMap.set(m.id, m));
-        for (const corr of result.correlations) {
-            const playerCorrelations: Record<string, number> = correlationsMap.get(corr.playerId) || {};
-            for (const correlated of corr.correlatedPlayers) {
-                playerCorrelations[correlated.playerId] = correlated.coefficient;
-            }
-            correlationsMap.set(corr.playerId, playerCorrelations);
-        }
-    }
-  }
-
-  // Enrich player data
-  playerMap.forEach((player, id) => {
-    const ownership = ownershipMap.get(id);
-    const projection = projectionsMap.get(id);
-    const metric = metricsMap.get(id);
-
-    if (ownership) {
-        player.flexOwnership = ownership.flexOwnership;
-        player.mvpOwnership = ownership.mvpOwnership;
-        player.leverage = ownership.leverage;
-    }
-    
-    if (projection) {
-        player.statProjections = { mean: projection.mean, ceiling: projection.ceiling };
-        // Calculate initial fpts based on the new granular data and default weights
-        player.fpts = calculateFptsFromProjections(projection.mean, INITIAL_WEIGHTS);
-        player.scenarioFpts = {
-            ceiling: calculateFptsFromProjections(projection.ceiling, INITIAL_WEIGHTS),
-            floor: projection.floorFpts,
-        };
-    }
-
-    if (metric) {
-        player.projectedUsage = metric.projectedUsage;
-        player.sentimentSummary = metric.sentimentSummary;
-        player.coordinatorTendency = metric.coordinatorTendency;
-        player.blitzRateDefense = metric.blitzRateDefense;
-    }
-    
-    player.correlations = correlationsMap.get(id) || {};
-  });
-
-  // Add Vegas data to all players (from the first successful batch)
-  const firstValidVegasResult = vegasAndProjectionsBatchResults?.find(r => r?.vegas);
-  if (firstValidVegasResult) {
-      const team = basePlayers[0]?.team;
-      const { teamASpread, gameTotal } = firstValidVegasResult.vegas;
-      playerMap.forEach(player => {
-          const isHomeTeam = player.team === team;
-          const spread = isHomeTeam ? teamASpread : -teamASpread;
-          player.vegas = {
-              spread,
-              total: gameTotal,
-              impliedTeamTotal: (gameTotal / 2) - (spread / 2),
-          };
+  if (advancedMetricsResult) {
+      // FIX: Corrected typo from advancedMetrics_result to advancedMetricsResult.
+      const metricsMap = new Map(advancedMetricsResult.playerMetrics.map(p => [p.id, p]));
+      finalPlayerMap.forEach((player, id) => {
+          const metrics = metricsMap.get(id);
+          if (metrics) {
+              // FIX: Cast 'metrics' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.advancedStats = (metrics as any).advancedStats;
+              // FIX: Cast 'metrics' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.statProjections = (metrics as any).statProjections;
+          }
       });
-      reportParts.push("Projections & Vegas odds loaded.");
+      const teamA = advancedMetricsResult.vegas.teamASpread > 0 ? Object.keys(advancedMetricsResult.vegas)[0] : Object.keys(advancedMetricsResult.vegas)[1];
+      finalPlayerMap.forEach(player => {
+        const isTeamA = player.team.toLowerCase() === teamA.toLowerCase();
+        const spread = isTeamA ? advancedMetricsResult.vegas.teamASpread : -advancedMetricsResult.vegas.teamASpread;
+        player.vegas = {
+            spread,
+            total: advancedMetricsResult.vegas.gameTotal,
+            impliedTeamTotal: (advancedMetricsResult.vegas.gameTotal / 2) - (spread / 2),
+        };
+      });
+      reportParts.push("Advanced metrics & Vegas odds loaded from AI.");
+  }
+  
+  if (ownershipResult) {
+      const ownershipMap = new Map(ownershipResult.players.map(p => [p.id, p]));
+      finalPlayerMap.forEach((player, id) => {
+          const ownershipData = ownershipMap.get(id);
+          if (ownershipData) {
+              // FIX: Correctly copy over ownership data from the enriched player object.
+              // FIX: Cast 'ownershipData' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.flexOwnership = (ownershipData as any).flexOwnership || 0;
+              // FIX: Cast 'ownershipData' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.mvpOwnership = (ownershipData as any).mvpOwnership || 0;
+              // FIX: Cast 'ownershipData' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.leverage = (ownershipData as any).leverage || 50;
+              // FIX: Assign the ownershipFeatures object, not the entire Player object.
+              // FIX: Cast 'ownershipData' to 'any' to resolve incorrect type inference to 'unknown'.
+              player.ownershipFeatures = (ownershipData as any).ownershipFeatures;
+          }
+      });
   }
 
-   if (advancedMetricsBatchResults) {
-       reportParts.push("Advanced metrics & correlations loaded.");
-   }
-
-
-  let finalPlayers = Array.from(playerMap.values());
-
-  // --- Post-Validation Steps ---
+  let finalPlayers = Array.from(finalPlayerMap.values());
+  
+  // Re-apply model projections using the new advanced stats
+  finalPlayers = applyModelProjections(finalPlayers);
+  
   setLoadingStatus("Analyzing value from injuries...");
   finalPlayers = analyzePlayerValue(finalPlayers, finalStatuses);
 
