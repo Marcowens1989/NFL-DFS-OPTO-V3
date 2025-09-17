@@ -64,7 +64,6 @@ const StackingRulesEditor: React.FC<StackingRulesEditorProps> = ({ rules, onRule
                     />
                     <span className="text-sm text-gray-300">Stack QB with 1+ WR/TE</span>
                 </label>
-                {/* FIX: The component was truncated here. The code has been completed. */}
                 <label className={`flex items-center space-x-3 ${!rules.stackQbWithReceiver ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                     <input
                         type="checkbox"
@@ -101,5 +100,4 @@ const StackingRulesEditor: React.FC<StackingRulesEditorProps> = ({ rules, onRule
     );
 };
 
-// FIX: Add default export to resolve module import error.
 export default StackingRulesEditor;

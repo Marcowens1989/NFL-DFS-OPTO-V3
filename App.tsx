@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import Header from './components/Header';
 import OptimizerPage from './components/OptimizerPage';
-import BacktestPage from './components/BacktestPage';
+import HistoricalSimulationEnginePage from './components/HistoricalSimulationEnginePage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StatWeights } from './types';
 
-export type AppTab = 'optimizer' | 'backtest';
+export type AppTab = 'optimizer' | 'lab';
 
 const INITIAL_WEIGHTS: StatWeights = {
     passYds: 0.04,
@@ -25,7 +25,7 @@ function App() {
 
   const handleStatWeightsChange = (newWeights: StatWeights) => {
     setStatWeights(newWeights);
-    // Optionally, switch to the optimizer tab to see the effect
+    // Switch to the optimizer tab to see the effect
     setActiveTab('optimizer');
   };
 
@@ -35,7 +35,7 @@ function App() {
       <main className="container mx-auto p-4 md:p-8">
         <ErrorBoundary>
           {activeTab === 'optimizer' && <OptimizerPage statWeights={statWeights} />}
-          {activeTab === 'backtest' && <BacktestPage onStatWeightsChange={handleStatWeightsChange} />}
+          {activeTab === 'lab' && <HistoricalSimulationEnginePage onApplyWeights={handleStatWeightsChange} initialWeights={statWeights} />}
         </ErrorBoundary>
       </main>
     </div>

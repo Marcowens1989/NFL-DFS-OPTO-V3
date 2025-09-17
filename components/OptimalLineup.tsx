@@ -4,36 +4,17 @@ import { Lineup, Player } from '../types';
 interface LineupResultsProps {
   lineups: Lineup[] | null;
   players: Player[];
-  exposures: Record<string, number>;
 }
 
 type Tab = 'lineups' | 'exposures';
+type SortableKeys = 'totalFpts' | 'totalCeilingFpts' | 'totalSalary' | 'correlationScore' | 'roiScore' | 'leverageScore';
 
-const LineupCard: React.FC<{ lineup: Lineup, index: number }> = ({ lineup, index }) => (
-    <div className="bg-gray-800 p-3 rounded-lg">
-        <div className="flex justify-between items-center mb-2">
-            <h4 className="font-bold text-white">Lineup #{index + 1}</h4>
-            <div className="text-right">
-                <p className="font-bold text-green-400">{lineup.totalFpts.toFixed(2)} <span className="text-xs font-normal text-gray-400">FPTS</span></p>
-                <p className="text-sm text-gray-400">${lineup.totalSalary.toLocaleString()}</p>
-            </div>
-        </div>
-        <div className="text-sm space-y-1">
-            <div className="flex items-center">
-                <span className="flex-shrink-0 font-bold text-gray-200 text-xs w-12 text-center mr-2 py-0.5 bg-gray-500/20 rounded-full">MVP</span>
-                <span>{lineup.mvp.name} <span className="text-gray-400">({lineup.mvp.position})</span></span>
-            </div>
-            {lineup.flex.map((p) => (
-                <div key={p.id} className="flex items-center">
-                    <span className="flex-shrink-0 font-bold text-gray-400 text-xs w-12 text-center mr-2 py-0.5 bg-gray-500/20 rounded-full">FLEX</span>
-                    <span>{p.name} <span className="text-gray-400">({p.position})</span></span>
-                </div>
-            ))}
-        </div>
-    </div>
-);
+interface SortConfig {
+  key: SortableKeys | null;
+  direction: 'ascending' | 'descending';
+}
 
-const ExposureView: React.FC<{ lineups: Lineup[], players: Player[], exposures: Record<string, number> }> = ({ lineups, players, exposures }) => {
+const ExposureView: React.FC<{ lineups: Lineup[], players: Player[] }> = ({ lineups, players }) => {
     const exposureCounts = useMemo(() => {
         const counts: Record<string, number> = {};
         players.forEach(p => counts[p.id] = 0);
@@ -59,8 +40,7 @@ const ExposureView: React.FC<{ lineups: Lineup[], players: Player[], exposures: 
                 <thead className="text-xs text-gray-400 uppercase bg-gray-800 sticky top-0">
                     <tr>
                         <th className="px-4 py-2">Player</th>
-                        <th className="px-4 py-2 text-center">Actual %</th>
-                        <th className="px-4 py-2 text-center">Max %</th>
+                        <th className="px-4 py-2 text-center">Exposure %</th>
                         <th className="px-4 py-2 text-center">Count</th>
                     </tr>
                 </thead>
@@ -69,12 +49,10 @@ const ExposureView: React.FC<{ lineups: Lineup[], players: Player[], exposures: 
                         const count = exposureCounts[player.id];
                         if (count === 0) return null;
                         const actualPercent = totalLineups > 0 ? (count / totalLineups) * 100 : 0;
-                        const maxPercent = exposures[player.id] || 100;
                         return (
-                            <tr key={player.id} className="bg-gray-800">
+                            <tr key={player.id} className="bg-gray-800 hover:bg-gray-900">
                                 <td className="px-4 py-2 font-medium text-white">{player.name}</td>
                                 <td className="px-4 py-2 text-center">{actualPercent.toFixed(1)}%</td>
-                                <td className="px-4 py-2 text-center">{maxPercent}%</td>
                                 <td className="px-4 py-2 text-center">{count}</td>
                             </tr>
                         )
@@ -85,8 +63,97 @@ const ExposureView: React.FC<{ lineups: Lineup[], players: Player[], exposures: 
     );
 };
 
+const LineupsTable: React.FC<{ lineups: Lineup[] }> = ({ lineups }) => {
+    const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'totalFpts', direction: 'descending' });
 
-const LineupResults: React.FC<LineupResultsProps> = ({ lineups, players, exposures }) => {
+    const sortedLineups = useMemo(() => {
+        let sortableItems = [...lineups];
+        if (sortConfig.key) {
+            sortableItems.sort((a, b) => {
+                const aValue = a[sortConfig.key!];
+                const bValue = b[sortConfig.key!];
+                if (aValue < bValue) return sortConfig.direction === 'ascending' ? -1 : 1;
+                if (aValue > bValue) return sortConfig.direction === 'ascending' ? 1 : -1;
+                return 0;
+            });
+        }
+        return sortableItems;
+    }, [lineups, sortConfig]);
+
+    const requestSort = (key: SortableKeys) => {
+        let direction: 'ascending' | 'descending' = 'descending';
+        if (sortConfig.key === key && sortConfig.direction === 'descending') {
+            direction = 'ascending';
+        }
+        setSortConfig({ key, direction });
+    };
+
+    const getSortIndicator = (key: SortableKeys) => {
+        if (sortConfig.key !== key) return null;
+        return sortConfig.direction === 'descending' ? '↓' : '↑';
+    };
+
+    const getHeaderClass = (key: SortableKeys) => {
+      return `px-2 py-2 text-right cursor-pointer transition-colors ${sortConfig.key === key ? 'text-white' : 'text-gray-400 hover:text-white'}`;
+    }
+
+    const getCorrelationColor = (score: number) => {
+      if (score > 0.5) return 'text-green-400 font-bold';
+      if (score < -0.5) return 'text-red-400 font-bold';
+      return 'text-gray-300';
+    }
+    
+    const getLeverageColor = (score: number) => {
+      if (score >= 85) return 'text-green-400 font-bold';
+      if (score >= 50) return 'text-yellow-400';
+      return 'text-red-400';
+    }
+
+    return (
+        <div className="overflow-auto max-h-[400px]">
+            <table className="w-full text-sm text-left">
+                <thead className="text-xs uppercase bg-gray-800 sticky top-0">
+                    <tr>
+                        <th className="px-2 py-2 text-center">#</th>
+                        <th className="px-2 py-2">Lineup</th>
+                        <th className={getHeaderClass('totalFpts')} onClick={() => requestSort('totalFpts')}>Mean {getSortIndicator('totalFpts')}</th>
+                        <th className={getHeaderClass('totalCeilingFpts')} onClick={() => requestSort('totalCeilingFpts')}>Ceiling {getSortIndicator('totalCeilingFpts')}</th>
+                        <th className={getHeaderClass('correlationScore')} onClick={() => requestSort('correlationScore')}>Corr. {getSortIndicator('correlationScore')}</th>
+                        <th className={getHeaderClass('leverageScore')} onClick={() => requestSort('leverageScore')}>Leverage {getSortIndicator('leverageScore')}</th>
+                        <th className={getHeaderClass('totalSalary')} onClick={() => requestSort('totalSalary')}>Salary {getSortIndicator('totalSalary')}</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-700">
+                    {sortedLineups.map((lineup, index) => (
+                        <tr key={index} className="bg-gray-800 hover:bg-gray-900">
+                            <td className="px-2 py-2 text-center font-medium">{index + 1}</td>
+                            <td className="px-2 py-2">
+                                <div className="text-xs">
+                                    <span className="font-bold text-gray-300">MVP:</span> {lineup.mvp.name}
+                                </div>
+                                <div className="text-xs text-gray-400 mt-1">
+                                    <span className="font-bold text-gray-500">FLEX:</span> {lineup.flex.map(p => p.name).join(', ')}
+                                </div>
+                            </td>
+                            <td className="px-2 py-2 text-right font-bold text-green-400">{lineup.totalFpts.toFixed(2)}</td>
+                            <td className="px-2 py-2 text-right font-bold text-cyan-400">{lineup.totalCeilingFpts.toFixed(2)}</td>
+                            <td className={`px-2 py-2 text-right ${getCorrelationColor(lineup.correlationScore)}`}>
+                                {lineup.correlationScore.toFixed(2)}
+                            </td>
+                            <td className={`px-2 py-2 text-right ${getLeverageColor(lineup.leverageScore)}`}>
+                                {lineup.leverageScore.toFixed(1)}
+                            </td>
+                            <td className="px-2 py-2 text-right">${lineup.totalSalary.toLocaleString()}</td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+};
+
+
+const LineupResults: React.FC<LineupResultsProps> = ({ lineups, players }) => {
   const [activeTab, setActiveTab] = useState<Tab>('lineups');
 
   if (!lineups) {
@@ -122,16 +189,8 @@ const LineupResults: React.FC<LineupResultsProps> = ({ lineups, players, exposur
         </div>
 
         <div className="flex-grow overflow-hidden">
-            {activeTab === 'lineups' && (
-                <div className="space-y-2 overflow-y-auto max-h-[400px] pr-2">
-                    {lineups.map((lineup, index) => (
-                        <LineupCard key={index} lineup={lineup} index={index} />
-                    ))}
-                </div>
-            )}
-            {activeTab === 'exposures' && (
-                <ExposureView lineups={lineups} players={players} exposures={exposures} />
-            )}
+            {activeTab === 'lineups' && <LineupsTable lineups={lineups} />}
+            {activeTab === 'exposures' && <ExposureView lineups={lineups} players={players} />}
         </div>
     </div>
   );

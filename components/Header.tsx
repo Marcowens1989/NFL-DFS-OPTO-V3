@@ -34,10 +34,10 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onTabChange }) => {
               Optimizer
             </button>
             <button
-              onClick={() => onTabChange('backtest')}
-              className={getButtonClass('backtest')}
+              onClick={() => onTabChange('lab')}
+              className={getButtonClass('lab')}
             >
-              Backtest
+              Projections Lab
             </button>
           </nav>
         </div>

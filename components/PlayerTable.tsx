@@ -5,18 +5,17 @@ import UnlockIcon from './icons/UnlockIcon';
 import ExcludeIcon from './icons/ExcludeIcon';
 import IncludeIcon from './icons/IncludeIcon';
 import DnaIcon from './icons/DnaIcon';
+import { getTeamLogoUrl } from '../services/teamLogoService';
 
 interface PlayerTableProps {
   players: Player[];
   statuses: Record<string, PlayerStatus>;
-  exposures: Record<string, number>;
   playerRanks: Map<string, number>;
   onStatusChange: (playerId: string, newStatus: PlayerStatus) => void;
-  onExposureChange: (playerId: string, exposure: number) => void;
   onPlayerSelect: (player: Player) => void;
 }
 
-type SortableKeys = 'fpts' | 'salary' | 'flexOwnership' | 'mvpOwnership' | 'value';
+type SortableKeys = 'fpts' | 'salary' | 'flexOwnership' | 'mvpOwnership' | 'value' | 'ceilingFpts' | 'leverage';
 
 interface SortConfig {
   key: SortableKeys | null;
@@ -41,7 +40,25 @@ const UsageBadge: React.FC<{ usage: Player['projectedUsage'], sentiment: string 
     );
 };
 
-const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures, playerRanks, onStatusChange, onExposureChange, onPlayerSelect }) => {
+const LeverageBadge: React.FC<{ score: number }> = ({ score }) => {
+    let colorClasses = 'bg-gray-500/20 text-gray-300 border-gray-500';
+    if (score >= 85) {
+        colorClasses = 'bg-green-500/20 text-green-300 border-green-500';
+    } else if (score >= 50) {
+        colorClasses = 'bg-yellow-500/20 text-yellow-300 border-yellow-500';
+    } else if (score > 0) {
+        colorClasses = 'bg-red-500/20 text-red-300 border-red-500';
+    }
+    
+    return (
+        <span className={`px-2 py-1 text-xs font-bold rounded-full border ${colorClasses}`}>
+            {score.toFixed(0)}
+        </span>
+    );
+};
+
+
+const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRanks, onStatusChange, onPlayerSelect }) => {
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'fpts', direction: 'descending' });
 
   const sortedPlayers = useMemo(() => {
@@ -53,6 +70,12 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
         if (sortConfig.key === 'value') {
           aValue = a.salary > 0 ? a.fpts / (a.salary / 1000) : 0;
           bValue = b.salary > 0 ? b.fpts / (b.salary / 1000) : 0;
+        } else if (sortConfig.key === 'ceilingFpts') {
+          aValue = a.scenarioFpts.ceiling;
+          bValue = b.scenarioFpts.ceiling;
+        } else if (sortConfig.key === 'leverage') {
+          aValue = a.leverage;
+          bValue = b.leverage;
         } else {
           aValue = a[sortConfig.key];
           bValue = b[sortConfig.key];
@@ -107,21 +130,23 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
             <th scope="col" className="px-4 py-3">Player</th>
             <th scope="col" className="px-2 py-3 text-center">Usage</th>
             <th scope="col" className={getHeaderClass('value')} onClick={() => requestSort('value')}>
-                Value (Pt/$)<span className="inline-block w-4">{getSortIndicator('value')}</span>
+                Value<span className="inline-block w-4">{getSortIndicator('value')}</span>
             </th>
             <th scope="col" className={getHeaderClass('fpts')} onClick={() => requestSort('fpts')}>
-                FLEX FPTS<span className="inline-block w-4">{getSortIndicator('fpts')}</span>
+                Mean<span className="inline-block w-4">{getSortIndicator('fpts')}</span>
+            </th>
+            <th scope="col" className={getHeaderClass('ceilingFpts')} onClick={() => requestSort('ceilingFpts')}>
+                Ceiling<span className="inline-block w-4">{getSortIndicator('ceilingFpts')}</span>
             </th>
             <th scope="col" className={getHeaderClass('salary')} onClick={() => requestSort('salary')}>
                 Salary<span className="inline-block w-4">{getSortIndicator('salary')}</span>
             </th>
             <th scope="col" className={getHeaderClass('flexOwnership')} onClick={() => requestSort('flexOwnership')}>
-                FLEX Own%<span className="inline-block w-4">{getSortIndicator('flexOwnership')}</span>
+                Own%<span className="inline-block w-4">{getSortIndicator('flexOwnership')}</span>
             </th>
-            <th scope="col" className={getHeaderClass('mvpOwnership')} onClick={() => requestSort('mvpOwnership')}>
-                MVP Own%<span className="inline-block w-4">{getSortIndicator('mvpOwnership')}</span>
+             <th scope="col" className={getHeaderClass('leverage')} onClick={() => requestSort('leverage')}>
+                Leverage<span className="inline-block w-4">{getSortIndicator('leverage')}</span>
             </th>
-            <th scope="col" className="px-4 py-3 text-center">Exposure %</th>
             <th scope="col" className="px-4 py-3 text-center">Actions</th>
           </tr>
         </thead>
@@ -135,22 +160,27 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
               <tr key={player.id} className={`border-b border-gray-700 transition-colors duration-200 ${getRowClass(status)}`}>
                 <td className="px-4 py-2 font-medium text-white whitespace-nowrap text-center">{rank}</td>
                 <td className="px-4 py-2 font-medium text-white whitespace-nowrap">
-                   <div className="flex items-center gap-2">
-                      <button 
-                        onClick={() => onPlayerSelect(player)} 
-                        className="text-left hover:underline focus:outline-none focus:underline" 
-                        title={tooltipText}
-                      >
-                        {player.name}
-                      </button>
-                      {player.playerDnaReport && <DnaIcon />}
-                      {player.usageBoost > 0 && (
-                          <div title={`Projected Gain: +${player.usageBoost.toFixed(2)} FDP ↑\nReason: ${player.notes}`}>
-                              <span role="img" aria-label="Rising stock">📈</span>
-                          </div>
-                      )}
+                   <div className="flex items-center gap-3">
+                      <img src={getTeamLogoUrl(player.team)} alt={`${player.team} logo`} className="h-6 w-6 object-contain" />
+                      <div>
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={() => onPlayerSelect(player)} 
+                                className="text-left hover:underline focus:outline-none focus:underline" 
+                                title={tooltipText}
+                            >
+                                {player.name}
+                            </button>
+                            {player.playerDnaReport && <DnaIcon />}
+                            {player.usageBoost > 0 && (
+                                <div title={`Projected Gain: +${player.usageBoost.toFixed(2)} FDP ↑\nReason: ${player.notes}`}>
+                                    <span role="img" aria-label="Rising stock">📈</span>
+                                </div>
+                            )}
+                        </div>
+                        <span className="text-gray-400 text-xs">{player.position}</span>
+                      </div>
                    </div>
-                  <span className="text-gray-400">{player.position}</span>
                 </td>
                 <td className="px-2 py-2 text-center">
                     <UsageBadge usage={player.projectedUsage} sentiment={player.sentimentSummary} />
@@ -159,19 +189,11 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, exposures,
                   {player.salary > 0 ? (player.fpts / (player.salary / 1000)).toFixed(2) : '0.00'}
                 </td>
                 <td className="px-4 py-2 text-right">{player.fpts.toFixed(2)}</td>
+                <td className="px-4 py-2 text-right font-bold text-cyan-400">{player.scenarioFpts.ceiling.toFixed(2)}</td>
                 <td className="px-4 py-2 text-right">${player.salary.toLocaleString()}</td>
                 <td className="px-4 py-2 text-right">{player.flexOwnership.toFixed(1)}%</td>
-                <td className="px-4 py-2 text-right">{player.mvpOwnership.toFixed(1)}%</td>
                 <td className="px-4 py-2 text-center">
-                    <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={exposures[player.id] || ''}
-                        onChange={(e) => onExposureChange(player.id, parseInt(e.target.value, 10))}
-                        className="w-16 bg-gray-800 border border-gray-600 rounded-md text-center py-1 text-white focus:ring-2 focus:ring-gray-500 focus:outline-none"
-                        disabled={status === PlayerStatus.EXCLUDED}
-                    />
+                    <LeverageBadge score={player.leverage} />
                 </td>
                 <td className="px-4 py-2">
                   <div className="flex justify-center items-center space-x-2">

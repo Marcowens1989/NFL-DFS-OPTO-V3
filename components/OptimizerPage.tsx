@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Player, Lineup, PlayerStatus, StackingRules, StatWeights } from '../types';
-import { generateMultipleLineups } from '../services/optimizer';
+import { generateMultipleLineups, OptimizationTarget } from '../services/optimizer';
 import FileUpload from './FileUpload';
 import PlayerTable from './PlayerTable';
 import LineupResults from './OptimalLineup';
@@ -11,6 +11,9 @@ import StackingRulesEditor from './StackingRulesEditor';
 import { strategyPresets } from '../services/strategyPresets';
 import { UploadData, getPlayerDnaReport } from '../services/dataManager';
 import { generateContent } from '../services/aiModelService';
+import ShowdownCommandCenter from './ShowdownCommandCenter';
+import OptimizationTargetSelector from './OptimizationTargetSelector';
+import SlateStructureAnalysis from './SlateStructureAnalysis';
 
 
 const SALARY_CAP = 60000;
@@ -30,7 +33,6 @@ interface OptimizerPageProps {
 function OptimizerPage({ statWeights }: OptimizerPageProps) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [playerStatuses, setPlayerStatuses] = useState<Record<string, PlayerStatus>>({});
-  const [playerExposures, setPlayerExposures] = useState<Record<string, number>>({});
   const [optimalLineups, setOptimalLineups] = useState<Lineup[] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,12 +44,13 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
   const [stackingRules, setStackingRules] = useState<StackingRules>(INITIAL_STACKING_RULES);
   const [recommendedStrategy, setRecommendedStrategy] = useState<string | null>(null);
   const [aiValidationReport, setAiValidationReport] = useState<string | null>(null);
+  const [optimizationTarget, setOptimizationTarget] = useState<OptimizationTarget>('mean');
+  const [slateNotes, setSlateNotes] = useState<string | null>(null);
 
   const playerRanks = useMemo(() => {
     const ranks = new Map<string, number>();
     if (players.length === 0) return ranks;
 
-    // TODO: In the future, recalculate fpts based on statWeights here
     const sortedByFpts = [...players].sort((a, b) => b.fpts - a.fpts);
     let rank = 0;
     let lastFpts = -1;
@@ -65,12 +68,8 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
     setPlayers(data.players);
     setPlayerStatuses(data.statuses);
     setAiValidationReport(data.validationReport);
+    setSlateNotes(data.slateNotes);
 
-    const initialExposures: Record<string, number> = {};
-    data.players.forEach(p => {
-      initialExposures[p.id] = 100;
-    });
-    setPlayerExposures(initialExposures);
     setOptimalLineups(null);
     setError(null);
     setSelectedPlayer(null);
@@ -82,14 +81,6 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
     setPlayerStatuses(prev => ({
       ...prev,
       [playerId]: newStatus,
-    }));
-  }, []);
-
-  const handleExposureChange = useCallback((playerId: string, exposure: number) => {
-    const clampedExposure = Math.max(0, Math.min(100, isNaN(exposure) ? 0 : exposure));
-    setPlayerExposures(prev => ({
-        ...prev,
-        [playerId]: clampedExposure,
     }));
   }, []);
   
@@ -119,7 +110,6 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
     } catch (e) {
         const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
         setError(`DNA Report Error: ${errorMessage}`);
-        // Optionally update the player with an error message in the report
         const updatePlayerWithError = (p: Player) => 
             p.id === playerId ? { ...p, playerDnaReport: `Error: ${errorMessage}` } : p;
 
@@ -242,16 +232,16 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
         { includedPlayers: [] as Player[], lockedPlayers: [] as Player[], excludedIds: new Set<string>() }
       );
       
-      const allPlayersForOptimization = [...includedPlayers, ...lockedPlayers];
+      const allPlayersForOptimization = players.filter(p => !excludedIds.has(p.id));
 
       const lineups = generateMultipleLineups(
         allPlayersForOptimization, 
         lockedPlayers, 
         excludedIds, 
-        playerExposures,
         numberOfLineups,
         salaryCap,
         stackingRules,
+        optimizationTarget
       );
       
       if (lineups && lineups.length > 0) {
@@ -267,7 +257,7 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [players, playerStatuses, salaryCap, playerExposures, numberOfLineups, stackingRules]);
+  }, [players, playerStatuses, salaryCap, numberOfLineups, stackingRules, optimizationTarget]);
   
   const hasPlayers = players.length > 0;
 
@@ -285,6 +275,10 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
               </div>
           )}
 
+          {hasPlayers && <ShowdownCommandCenter players={players} />}
+          
+          {hasPlayers && <SlateStructureAnalysis notes={slateNotes} />}
+
           <AIAnalysis 
               hasPlayers={hasPlayers}
               analysis={aiAnalysis}
@@ -296,14 +290,12 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
           
           {hasPlayers && (
             <div className="mt-6">
-              <h2 className="text-2xl font-bold mb-4 text-white">2. Manage Roster & Exposures</h2>
+              <h2 className="text-2xl font-bold mb-4 text-white">2. Manage Roster</h2>
               <PlayerTable 
                 players={players} 
                 statuses={playerStatuses} 
-                exposures={playerExposures}
                 playerRanks={playerRanks}
                 onStatusChange={handleStatusChange} 
-                onExposureChange={handleExposureChange}
                 onPlayerSelect={handlePlayerSelect}
               />
             </div>
@@ -312,7 +304,11 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
         
         <div className="bg-black border border-gray-700 p-6 rounded-lg shadow-lg flex flex-col">
           <h2 className="text-2xl font-bold mb-4 text-white">3. Generation Settings</h2>
-           <div className="mb-4">
+          <OptimizationTargetSelector
+              selected={optimizationTarget}
+              onSelect={setOptimizationTarget}
+          />
+           <div className="my-4">
               <label htmlFor="salary-cap" className="block text-sm font-medium text-gray-400 mb-2">Salary Cap</label>
               <input
                   type="number"
@@ -354,7 +350,7 @@ function OptimizerPage({ statWeights }: OptimizerPageProps) {
             )}
           </button>
           <div className="mt-6 flex-grow">
-            <LineupResults lineups={optimalLineups} players={players} exposures={playerExposures} />
+            <LineupResults lineups={optimalLineups} players={players} />
           </div>
         </div>
       </div>

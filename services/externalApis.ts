@@ -101,11 +101,3 @@ export async function getPlayerStatusesFromSleeper(players: Player[], currentSta
 
     return { sleeperStatuses, playersToAICheck, sleeperReport: sleeperReport.trim() };
 }
-
-// FIX: Export the missing function getGameDataFromOddsApi to resolve import error in dataManager.ts.
-// This is a placeholder as no external odds API is available. It returns null to allow the 
-// data pipeline to gracefully fall back to AI enrichment.
-export async function getGameDataFromOddsApi(team: string, opponent: string): Promise<{ gameScriptScore: number } | null> {
-    console.log(`[Placeholder] Attempted to fetch odds for ${team} vs ${opponent}. No odds API configured, returning null.`);
-    return null;
-}

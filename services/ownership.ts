@@ -1,42 +1,96 @@
 import { Player } from '../types';
+import { generateContent } from './aiModelService';
+import { Type } from '@google/genai';
 
-// Helper to normalize an array of scores to sum to a target (e.g., 100)
-const normalizeScores = (players: (Player & { popularityScore: number })[], targetSum: number): Record<string, number> => {
-  const totalScore = players.reduce((sum, p) => sum + (p.popularityScore || 0), 0);
-  if (totalScore === 0) {
-    return players.reduce((acc, p) => ({ ...acc, [p.id]: 0 }), {});
-  }
-  const factor = targetSum / totalScore;
-  return players.reduce((acc, p) => ({ ...acc, [p.id]: (p.popularityScore || 0) * factor }), {});
-};
+export interface OwnershipAnalysisResult {
+    players: Player[];
+    slateNotes: string;
+}
 
-export const generateOwnershipProjections = (players: Player[]): Player[] => {
-    // These weights are arbitrary and can be tuned for better projections
-    const FLEX_FPTS_WEIGHT = 0.6;
-    const FLEX_SALARY_WEIGHT = 0.4;
-    const MVP_FPTS_WEIGHT = 0.8;
-    const MVP_SALARY_WEIGHT = 0.2;
-
-    const playersWithFlexScores = players.map(p => {
-        const popularityScore = (p.fpts * FLEX_FPTS_WEIGHT) + ((p.salary / 1000) * FLEX_SALARY_WEIGHT);
-        return { ...p, popularityScore };
-    });
-
-    const playersWithMvpScores = players.map(p => {
-         // MVP popularity is more skewed towards high-scorers, hence Math.pow
-        const popularityScore = (Math.pow(p.fpts, 1.5) * MVP_FPTS_WEIGHT) + ((p.mvpSalary / 1000) * MVP_SALARY_WEIGHT);
-        return { ...p, popularityScore };
-    });
-
-    // Total FLEX ownership across all players in a showdown is 500% (100% * 5 roster spots)
-    // A reasonable total projected ownership for the field is ~250-300%.
-    const normalizedFlex = normalizeScores(playersWithFlexScores, 280);
-    // Total MVP ownership is 100%
-    const normalizedMvp = normalizeScores(playersWithMvpScores, 100);
-
-    return players.map(p => ({
-        ...p,
-        flexOwnership: normalizedFlex[p.id] || 0,
-        mvpOwnership: normalizedMvp[p.id] || 0,
+export async function getAIOwnershipAnalysis(players: Player[]): Promise<OwnershipAnalysisResult> {
+    const playerList = players.map(p => ({
+        id: p.id,
+        name: p.name,
+        position: p.position,
+        team: p.team,
+        fpts: p.fpts,
+        salary: p.salary
     }));
-};
+
+    const prompt = `
+        You are a world-class Daily Fantasy Sports (DFS) analyst for GPP tournaments. Your specialty is projecting player ownership and identifying leverage opportunities on a FanDuel NFL Showdown slate.
+
+        Analyze the provided player list and return a single JSON object with two top-level keys: "players" and "slateNotes".
+
+        1.  **"players" key**: This should be an array of objects. For EACH player in the original list, provide an object with the following keys:
+            *   "id": The player's ID (must match the input).
+            *   "flexOwnership": Your best projection for their FLEX ownership percentage (as a number).
+            *   "mvpOwnership": Your best projection for their MVP ownership percentage (as a number).
+            *   "leverage": A GPP leverage score from 1-100.
+                - A high score (85+) means the player has massive upside relative to their projected ownership, making them an elite tournament play. They are a "good chalk" or a high-upside pivot.
+                - A medium score (50-84) represents a solid play who is appropriately owned.
+                - A low score (<50) means they are likely "bad chalk" (over-owned relative to their ceiling) or have very low upside.
+
+        2.  **"slateNotes" key**: A string containing sharp, concise analysis. Structure it with two markdown subheadings:
+            *   "### Roster Construction Forecast": Describe the 2-3 most common roster builds you expect to see and **estimate their combined ownership percentage**. (e.g., "Chalk 4-2 KC stacks featuring the QB and his top two targets will be popular, likely making up ~25-30% of the field...").
+            *   "### Top Leverage Stack": Identify a single, lower-owned stack that has the potential to win a tournament if the game script breaks their way. **Estimate its ownership** and explain the rationale.
+
+        Return ONLY the single, valid JSON object.
+
+        Player List:
+        ${JSON.stringify(playerList, null, 2)}
+    `;
+
+    const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+            players: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        flexOwnership: { type: Type.NUMBER },
+                        mvpOwnership: { type: Type.NUMBER },
+                        leverage: { type: Type.NUMBER },
+                    },
+                    required: ['id', 'flexOwnership', 'mvpOwnership', 'leverage']
+                }
+            },
+            slateNotes: { type: Type.STRING },
+        },
+        required: ['players', 'slateNotes']
+    };
+
+    const responseText = await generateContent(prompt, { responseSchema }, 120000, 2);
+    
+    // FIX: Define a type for the AI player data and strongly type the parsed JSON.
+    // This resolves errors from accessing properties on an 'unknown' type and improves type safety.
+    type AiPlayerOwnership = {
+        id: string;
+        flexOwnership: number;
+        mvpOwnership: number;
+        leverage: number;
+    };
+    const analysis: { players: AiPlayerOwnership[]; slateNotes: string; } = JSON.parse(responseText);
+
+    const analysisMap = new Map(analysis.players.map(p => [p.id, p]));
+
+    const updatedPlayers = players.map(p => {
+        const playerData = analysisMap.get(p.id);
+        if (playerData) {
+            return {
+                ...p,
+                flexOwnership: typeof playerData.flexOwnership === 'number' ? playerData.flexOwnership : 0,
+                mvpOwnership: typeof playerData.mvpOwnership === 'number' ? playerData.mvpOwnership : 0,
+                leverage: typeof playerData.leverage === 'number' ? playerData.leverage : 0,
+            };
+        }
+        return p;
+    });
+
+    return {
+        players: updatedPlayers,
+        slateNotes: analysis.slateNotes,
+    };
+}

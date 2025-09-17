@@ -1,11 +1,16 @@
 import { Player, Lineup, StackingRules } from '../types';
 
-const ROSTER_SIZE = 6; // 1 MVP + 5 FLEX
+const ROSTER_SIZE = 5; // 1 MVP + 4 FLEX
 const FLEX_SIZE = ROSTER_SIZE - 1;
 const MVP_MULTIPLIER = 1.5;
 
-// Helper to get Fpts with usage boost
-const getBoostedFpts = (p: Player) => p.fpts + (p.usageBoost || 0);
+export type OptimizationTarget = 'mean' | 'ceiling';
+
+// Helper to get Fpts based on optimization target
+const getTargetFpts = (p: Player, target: OptimizationTarget) => {
+    const baseFpts = target === 'ceiling' ? p.scenarioFpts.ceiling : p.fpts;
+    return baseFpts + (p.usageBoost || 0);
+};
 
 // Creates a unique signature for a lineup to avoid duplicates
 const getLineupSignature = (mvp: Player, flex: Player[]): string => {
@@ -14,29 +19,59 @@ const getLineupSignature = (mvp: Player, flex: Player[]): string => {
 };
 
 // Calculates stats for a given lineup
-function calculateLineupStats(mvp: Player, flex: Player[]): Omit<Lineup, 'mvp' | 'flex'> {
+function calculateLineupStats(mvp: Player, flex: Player[], optimizationTarget: OptimizationTarget): Omit<Lineup, 'mvp' | 'flex'> {
   const totalSalary = flex.reduce((sum, p) => sum + p.salary, mvp.salary);
-  const totalFpts = flex.reduce((sum, p) => sum + getBoostedFpts(p), getBoostedFpts(mvp) * MVP_MULTIPLIER);
+  const totalFpts = flex.reduce((sum, p) => sum + getTargetFpts(p, 'mean'), getTargetFpts(mvp, 'mean') * MVP_MULTIPLIER);
+  const totalCeilingFpts = flex.reduce((sum, p) => sum + getTargetFpts(p, 'ceiling'), getTargetFpts(mvp, 'ceiling') * MVP_MULTIPLIER);
   
   const lineup = [mvp, ...flex];
 
-  const totalOwnership = lineup.reduce((sum, p) => sum + p.flexOwnership, 0);
+  const totalOwnership = lineup.reduce((sum, p, index) => {
+      // MVP contributes their MVP ownership, FLEX their FLEX ownership
+      const ownership = index === 0 ? p.mvpOwnership : p.flexOwnership;
+      return sum + ownership;
+  }, 0);
   const ownershipScore = lineup.length > 0 ? totalOwnership / lineup.length : 0;
+
+  // Calculate Ownership Product (proxy for duplication rate)
+  const ownershipProduct = lineup.reduce((prod, p, index) => {
+      const ownership = index === 0 ? p.mvpOwnership : p.flexOwnership;
+      // Use a small epsilon to avoid multiplying by zero for players with 0% ownership
+      return prod * (ownership / 100 || 0.0001);
+  }, 1);
   
+  const totalLeverage = lineup.reduce((sum, p) => sum + (p.leverage || 0), 0);
+  const leverageScore = lineup.length > 0 ? totalLeverage / lineup.length : 0;
+
   const teamCounts: Record<string, number> = {};
   lineup.forEach(p => {
       teamCounts[p.team] = (teamCounts[p.team] || 0) + 1;
   });
   const stackType = Object.values(teamCounts).sort((a, b) => b - a).join('-');
 
-  // Placeholder ROI Score: rewards points per dollar, penalizes ownership
-  const roiScore = (totalFpts / (totalSalary / 10000)) - ownershipScore;
+  let correlationScore = 0;
+  for (let i = 0; i < lineup.length; i++) {
+      for (let j = i + 1; j < lineup.length; j++) {
+          const playerA = lineup[i];
+          const playerB = lineup[j];
+          const corrValue = (playerA.correlations?.[playerB.id] || playerB.correlations?.[playerB.id] || 0);
+          correlationScore += corrValue;
+      }
+  }
+
+  // NEW ROI SCORE: Heavily rewards ceiling and uniqueness (low ownership product),
+  // while also factoring in correlation and leverage.
+  const uniquenessFactor = 1 / (Math.pow(ownershipProduct, 0.25) + 0.001);
+  const roiScore = (totalCeilingFpts * (1 + correlationScore)) * uniquenessFactor * (leverageScore / 100);
 
   return { 
       totalFpts, 
+      totalCeilingFpts,
       totalSalary,
       ownershipScore,
-      correlationScore: 0, // Placeholder: not enough data in CSV to calculate this.
+      ownershipProduct,
+      correlationScore,
+      leverageScore,
       stackType,
       roiScore,
   };
@@ -74,77 +109,99 @@ function findOptimalLineup(
   excludedIds: Set<string>,
   salaryCap: number,
   excludedSignatures: Set<string>,
-  stackingRules: StackingRules
+  stackingRules: StackingRules,
+  optimizationTarget: OptimizationTarget
 ): Lineup | null {
   let bestLineup: Lineup | null = null;
+  let bestLineupScore = -1;
 
-  // Filter out players with 'unlikely' usage before starting optimization
-  // FIX: Corrected typo from 'unlikely' to 'Unlikely' to match the type definition.
-  const mainPool = players.filter(p => !excludedIds.has(p.id) && p.projectedUsage !== 'Unlikely');
+  // PRUNING STEP 1: Sort main pool by Fpts to find good lineups early, which makes future pruning more effective.
+  const mainPool = players
+    .filter(p => !excludedIds.has(p.id) && p.projectedUsage !== 'Unlikely')
+    .sort((a, b) => getTargetFpts(b, optimizationTarget) - getTargetFpts(a, optimizationTarget));
   
   for (const mvp of mainPool) {
-    // If MVP is locked, but this isn't a locked player, skip if any other locks exist
     const isMvpLocked = lockedPlayers.some(lp => lp.id === mvp.id);
-    if (lockedPlayers.length > 0 && !isMvpLocked && !lockedPlayers.every(lp => lp.id === mvp.id)) {
-        const hasLockedMvp = lockedPlayers.some(lp => mainPool.find(mp => mp.id === lp.id));
-        if(hasLockedMvp) continue;
+    if (lockedPlayers.length > 0 && !isMvpLocked && lockedPlayers.every(lp => lp.id !== mvp.id)) {
+        const hasLockedMvpInPool = lockedPlayers.some(lp => mainPool.some(mp => mp.id === lp.id));
+        if (hasLockedMvpInPool) continue;
     }
 
     const lockedFlex = lockedPlayers.filter(p => p.id !== mvp.id);
     if (lockedFlex.length > FLEX_SIZE) continue;
 
-    const currentSalary = lockedFlex.reduce((sum, p) => sum + p.salary, mvp.salary);
-    const currentFpts = lockedFlex.reduce((sum, p) => sum + getBoostedFpts(p), 0);
-    
-    if (currentSalary > salaryCap) continue;
+    const currentLineup: Player[] = [mvp, ...lockedFlex];
+    const remainingSalary = salaryCap - currentLineup.reduce((sum, p) => sum + p.salary, 0);
+    const remainingSlots = FLEX_SIZE - lockedFlex.length;
 
-    const flexPool = mainPool.filter(p => p.id !== mvp.id && !lockedFlex.some(lp => lp.id === p.id))
-                             .sort((a, b) => b.salary - a.salary); // Sort by salary for better pruning
+    if (remainingSalary < 0 || remainingSlots < 0) continue;
 
-    let bestFlexCombination: Player[] | null = null;
-    let maxFpts = -1;
+    if (remainingSlots === 0) {
+        const signature = getLineupSignature(mvp, lockedFlex);
+        if (excludedSignatures.has(signature) || !isLineupValid(mvp, lockedFlex, stackingRules)) {
+            continue;
+        }
+        const score = currentLineup.reduce((sum, p, i) => sum + getTargetFpts(p, optimizationTarget) * (i === 0 ? MVP_MULTIPLIER : 1), 0);
+        if (score > bestLineupScore) {
+            bestLineupScore = score;
+            bestLineup = {
+                mvp,
+                flex: lockedFlex,
+                ...calculateLineupStats(mvp, lockedFlex, optimizationTarget),
+            };
+        }
+        continue;
+    }
 
-    function findFlex(startIndex: number, combination: Player[]) {
-      const currentComboSalary = combination.reduce((sum, p) => sum + p.salary, currentSalary);
-      
-      if (combination.length === FLEX_SIZE - lockedFlex.length) {
-        const finalFlex = [...lockedFlex, ...combination];
-        if (!isLineupValid(mvp, finalFlex, stackingRules)) return;
-        
-        const signature = getLineupSignature(mvp, finalFlex);
-        if (excludedSignatures.has(signature)) return;
+    const flexPool = mainPool.filter(p => !currentLineup.some(lp => lp.id === p.id));
 
-        const comboFpts = combination.reduce((sum, p) => sum + getBoostedFpts(p), currentFpts);
-        
-        if (comboFpts > maxFpts) {
-          maxFpts = comboFpts;
-          bestFlexCombination = finalFlex;
+    let bestFlexForMvp: Player[] | null = null;
+    let maxFlexFpts = -1;
+
+    function findFlex(startIndex: number, combination: Player[], currentSalary: number, currentFpts: number) {
+      if (combination.length === remainingSlots) {
+        if (currentFpts > maxFlexFpts) {
+          maxFlexFpts = currentFpts;
+          bestFlexForMvp = [...combination];
         }
         return;
       }
-
+      
       if (startIndex >= flexPool.length) return;
 
       for (let i = startIndex; i < flexPool.length; i++) {
         const player = flexPool[i];
-        if (currentComboSalary + player.salary > salaryCap) continue;
-
-        combination.push(player);
-        findFlex(i + 1, combination);
-        combination.pop();
+        if (currentSalary + player.salary <= remainingSalary) {
+          combination.push(player);
+          findFlex(
+            i + 1,
+            combination,
+            currentSalary + player.salary,
+            currentFpts + getTargetFpts(player, optimizationTarget)
+          );
+          combination.pop();
+        }
       }
     }
 
-    findFlex(0, []);
+    findFlex(0, [], 0, 0);
 
-    if (bestFlexCombination) {
-      const lineupStats = calculateLineupStats(mvp, bestFlexCombination);
-      if (!bestLineup || lineupStats.totalFpts > bestLineup.totalFpts) {
-        bestLineup = {
-          mvp,
-          flex: bestFlexCombination,
-          ...lineupStats,
-        };
+    if (bestFlexForMvp) {
+      const finalFlex = [...lockedFlex, ...bestFlexForMvp];
+      const finalLineup = [mvp, ...finalFlex];
+      const finalLineupScore = finalLineup.reduce((sum, p, i) => sum + getTargetFpts(p, optimizationTarget) * (i === 0 ? MVP_MULTIPLIER : 1), 0);
+      
+      if (finalLineupScore > bestLineupScore) {
+          if (!isLineupValid(mvp, finalFlex, stackingRules)) continue;
+          const signature = getLineupSignature(mvp, finalFlex);
+          if (excludedSignatures.has(signature)) continue;
+
+          bestLineupScore = finalLineupScore;
+          bestLineup = {
+              mvp,
+              flex: finalFlex,
+              ...calculateLineupStats(mvp, finalFlex, optimizationTarget),
+          };
       }
     }
   }
@@ -152,50 +209,35 @@ function findOptimalLineup(
   return bestLineup;
 }
 
+
 // Generates multiple lineups respecting exposure constraints
 export function generateMultipleLineups(
     players: Player[],
     lockedPlayers: Player[],
     excludedIds: Set<string>,
-    playerExposures: Record<string, number>,
     numberOfLineups: number,
     salaryCap: number,
     stackingRules: StackingRules,
+    optimizationTarget: OptimizationTarget,
 ): Lineup[] {
     const lineups: Lineup[] = [];
     const excludedSignatures = new Set<string>();
-    const playerCounts: Record<string, number> = {};
-    players.forEach(p => playerCounts[p.id] = 0);
 
     for (let i = 0; i < numberOfLineups; i++) {
-        const tempExcludedIds = new Set(excludedIds);
-        
-        Object.entries(playerCounts).forEach(([playerId, count]) => {
-            const exposure = playerExposures[playerId] ?? 100;
-            const exposureLimit = Math.ceil((exposure / 100) * numberOfLineups);
-            if (count >= exposureLimit) {
-                tempExcludedIds.add(playerId);
-            }
-        });
-
         const optimalLineup = findOptimalLineup(
             players,
             lockedPlayers,
-            tempExcludedIds,
+            excludedIds,
             salaryCap,
             excludedSignatures,
-            stackingRules
+            stackingRules,
+            optimizationTarget
         );
 
         if (optimalLineup) {
             lineups.push(optimalLineup);
             const signature = getLineupSignature(optimalLineup.mvp, optimalLineup.flex);
             excludedSignatures.add(signature);
-            
-            playerCounts[optimalLineup.mvp.id] = (playerCounts[optimalLineup.mvp.id] || 0) + 1;
-            optimalLineup.flex.forEach(p => {
-                playerCounts[p.id] = (playerCounts[p.id] || 0) + 1;
-            });
         } else {
             break; // No more unique, valid lineups can be found
         }

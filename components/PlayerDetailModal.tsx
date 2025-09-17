@@ -91,15 +91,18 @@ const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRan
             
             <div className="grid grid-cols-3 gap-4 mb-6">
                 <StatDisplay label="Rank" value={`#${playerRank}`} />
-                <StatDisplay label="FLEX FPTS" value={player.fpts.toFixed(2)} />
+                <StatDisplay label="Mean FPTS" value={player.fpts.toFixed(2)} />
                 <StatDisplay label="Salary" value={`$${player.salary.toLocaleString()}`} color="text-white" />
             </div>
 
             <div className="space-y-4">
                 <div className="bg-gray-800 p-4 rounded-lg">
                     <h3 className="font-bold text-lg mb-2 text-white">Projections & Usage</h3>
+                    <MetricDisplay label="Ceiling Projection" value={<span className="font-bold text-cyan-400">{player.scenarioFpts.ceiling.toFixed(2)}</span>} />
+                    <MetricDisplay label="Floor Projection" value={player.scenarioFpts.floor.toFixed(2)} />
                     <MetricDisplay label="FLEX Ownership" value={`${player.flexOwnership.toFixed(1)}%`} />
                     <MetricDisplay label="MVP Ownership" value={`${player.mvpOwnership.toFixed(1)}%`} />
+                    <MetricDisplay label="Leverage Score" value={<span className="font-bold text-orange-400">{player.leverage.toFixed(0)}</span>} />
                     <MetricDisplay label="Projected Usage" value={player.projectedUsage} />
                      <div className="pt-2 mt-2 border-t border-gray-700">
                         <p className="text-sm text-gray-400">Sentiment Summary:</p>
@@ -108,7 +111,7 @@ const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({ player, playerRan
                 </div>
                  <div className="bg-gray-800 p-4 rounded-lg">
                     <h3 className="font-bold text-lg mb-2 text-white">Advanced Metrics</h3>
-                    <MetricDisplay label="Game Script Score" value={player.gameScriptScore.toFixed(1)} />
+                    <MetricDisplay label="Implied Team Total" value={player.vegas ? player.vegas.impliedTeamTotal.toFixed(1) : 'N/A'} />
                     <MetricDisplay label="Opponent Blitz Rate" value={`${player.blitzRateDefense.toFixed(1)}%`} />
                     <MetricDisplay label="Coordinator Tendency" value={player.coordinatorTendency} />
                 </div>

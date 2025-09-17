@@ -1,33 +1,24 @@
-import { Player, PlayerStatus, StatProjections } from '../types';
-import { generateOwnershipProjections } from './ownership';
+import { Player, PlayerStatus } from '../types';
+import { getAIOwnershipAnalysis } from './ownership';
 import { analyzePlayerValue } from './valueAnalyzer';
-import { getPlayerStatusesFromSleeper, getGameDataFromOddsApi } from './externalApis';
+import { getPlayerStatusesFromSleeper } from './externalApis';
 import { generateContent } from './aiModelService';
+import { Type } from '@google/genai';
 
 export interface UploadData {
   players: Player[];
   statuses: Record<string, PlayerStatus>;
   validationReport: string;
+  slateNotes: string;
 }
 
-// --- Helper Functions ---
-
-/**
- * Extracts a JSON object from a string, even if it's surrounded by other text.
- * @param text The text to parse.
- * @returns A parsed JSON object, or null if no valid JSON is found.
- */
-function extractJsonObject(text: string): any {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch (e) {
-      console.error("Failed to parse extracted JSON:", e);
-      return null;
-    }
+// --- Utility for Batching ---
+function batch<T>(items: T[], batchSize: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    batches.push(items.slice(i, i + batchSize));
   }
-  return null;
+  return batches;
 }
 
 
@@ -70,27 +61,32 @@ async function parseCsv(file: File): Promise<Player[]> {
 
     if (!id || !name || !position || !team || !opponent || isNaN(salary) || isNaN(mvpSalary)) return null;
 
+    // Initialize with default/empty values for new structures
     return { 
       id, name, position, salary, mvpSalary, fpts, team, opponent,
       flexOwnership: 0, mvpOwnership: 0,
       injuryStatus, injuryDetails, usageBoost: 0, notes: '',
-      statProjections: {} as StatProjections,
+      vegas: null,
+      scenarioFpts: { ceiling: fpts, floor: fpts },
       correlations: {},
-      gameScriptScore: 0,
       blitzRateDefense: 0,
       coordinatorTendency: 'balanced',
-      projectedUsage: 'Backup', // Default value
-      sentimentSummary: 'No specific news.', // Default value
+      projectedUsage: 'Backup',
+      sentimentSummary: 'No specific news.',
+      leverage: 0,
     };
   }).filter((p): p is Player => p !== null);
 }
 
 async function validatePlayersWithAI(players: Player[]): Promise<{ playersToExclude: Set<string>; validationSummary: string; }> {
+  if (players.length === 0) {
+      return { playersToExclude: new Set(), validationSummary: "" };
+  }
   try {
     const playerList = players.map(p => `- ${p.name} (${p.position}, ${p.team}) - Current Status: '${p.injuryStatus || 'None'}'`).join('\n');
     const prompt = `You are a DFS data validation expert. Using your search capabilities, determine if any players from the list below are confirmed INACTIVE (OUT, IR, etc.). Do not flag players who are just Questionable or Doubtful. Respond with a comma-separated list of the full names of ONLY the players confirmed INACTIVE, followed by '---', followed by a one-sentence summary. If none, respond with "None---All players appear active."\n\n${playerList}`;
 
-    const responseText = await generateContent(prompt);
+    const responseText = await generateContent(prompt, undefined, 90000, 2);
 
     const [inactiveNamesStr, summary] = responseText.split('---');
     const playersToExclude = new Set<string>();
@@ -105,97 +101,145 @@ async function validatePlayersWithAI(players: Player[]): Promise<{ playersToExcl
     return { playersToExclude, validationSummary: summary ? `AI Fallback: ${summary.trim()}` : "AI validation complete." };
   } catch (error) {
     console.error("AI Validation Error:", error);
-    return { playersToExclude: new Set(), validationSummary: `AI validation failed: ${error.message}. Please check statuses manually.` };
+    return { playersToExclude: new Set(), validationSummary: `AI validation failed: ${error instanceof Error ? error.message : String(error)}. Please check statuses manually.` };
   }
 }
 
-async function _enrichGameScriptWithAI(team: string, opponent: string): Promise<{ data: number, report: string }> {
-    try {
-        const gameIdentifier = `${team} vs ${opponent}`;
-        const prompt = `What is the Vegas Point Total for the NFL game: ${gameIdentifier}? Respond with only the number.`;
-        const responseText = await generateContent(prompt);
-        const score = parseFloat(responseText);
-        if (isNaN(score)) throw new Error("AI did not return a valid number.");
-        return { data: score, report: `Game Script Score from AI Fallback: ${score.toFixed(1)}` };
-    } catch (error) {
-        console.error("Game Script AI Error:", error)
-        return { data: 50, report: `Game Script AI failed: ${error.message}. Using default.`}
-    }
+// --- NEW: Granular AI Analysis Functions ---
+
+interface VegasAndProjectionsResult {
+    vegas: { teamASpread: number; gameTotal: number; };
+    projections: { id: string; meanFpts: number; ceilingFpts: number; floorFpts: number; }[];
 }
 
-async function _enrichCoordinatorTendenciesWithAI(team: string, opponent: string): Promise<{ data: Record<string, { coordinatorTendency: Player['coordinatorTendency'] }>, report: string }> {
-  try {
-    const prompt = `For the NFL game ${team} vs ${opponent}, what is the offensive coordinator tendency for each team ('pass-heavy', 'run-heavy', 'balanced')? Respond with ONLY a JSON object like {"${team}": {"coordinatorTendency": "value"}, "${opponent}": {"coordinatorTendency": "value"}}`;
-    const responseText = await generateContent(prompt);
-    const jsonData = extractJsonObject(responseText);
-    if (!jsonData) throw new Error("AI did not return valid JSON.");
-    return { data: jsonData, report: "Coordinator Tendencies from AI: Success." };
-  } catch (error) {
-    console.error("AI Coordinator Tendency Error:", error);
-    const defaultData = { [team]: { coordinatorTendency: 'balanced' as const }, [opponent]: { coordinatorTendency: 'balanced' as const } };
-    return { data: defaultData, report: `Coordinator Tendency AI failed: ${error.message}. Using defaults.` };
-  }
-}
+async function getVegasAndProjectionsAI(players: Player[]): Promise<VegasAndProjectionsResult | null> {
+    if (players.length === 0) return null;
+    const team = players[0]?.team;
+    if (!team) return null;
 
-async function _enrichBlitzRatesWithAI(team: string, opponent: string): Promise<{ data: Record<string, { blitzRateDefense: number }>, report: string}> {
-  try {
-    const prompt = `For the NFL game ${team} vs ${opponent}, what is the defensive blitz rate percentage for each team? Respond with ONLY a JSON object like {"${team}": {"blitzRateDefense": NUMBER}, "${opponent}": {"blitzRateDefense": NUMBER}}`;
-    const responseText = await generateContent(prompt);
-    const jsonData = extractJsonObject(responseText);
-    if (!jsonData) throw new Error("AI did not return valid JSON.");
-    return { data: jsonData, report: "Blitz Rates from AI: Success." };
-  } catch (error) {
-    console.error("AI Blitz Rate Error:", error);
-    const defaultData = { [team]: { blitzRateDefense: 0 }, [opponent]: { blitzRateDefense: 0 } };
-    return { data: defaultData, report: `Blitz Rate AI failed: ${error.message}. Using defaults.`};
-  }
-}
-
-// Heuristic-based usage assignment (no AI)
-function assignDefaultUsageHeuristics(players: Player[]): Player[] {
-  return players.map(p => {
-    let projectedUsage: Player['projectedUsage'] = 'Backup';
-    if (p.salary >= 9000 || (p.salary >= 7000 && ['QB', 'RB', 'WR'].includes(p.position))) {
-      projectedUsage = 'Starter';
-    } else if (p.salary >= 4000) {
-      projectedUsage = 'Role Player';
-    } else if (p.salary < 2000 && p.position !== 'K' && p.position !== 'D') {
-      projectedUsage = 'Unlikely';
-    }
-    return { ...p, projectedUsage };
-  });
-}
-
-// New architecture: Individual, parallel, fault-tolerant AI calls for sentiment
-async function enrichWithUsageAndSentiment(players: Player[]): Promise<Player[]> {
-  // 1. Assign usage ratings instantly using heuristics
-  let playersWithUsage = assignDefaultUsageHeuristics(players);
-
-  // 2. Fetch sentiment for each player individually and in parallel
-  const fetchSentiment = async (player: Player): Promise<Partial<Player>> => {
+    const playerList = players.map(p => ({ id: p.id, name: p.name }));
     const prompt = `
-      You are an expert fantasy football analyst. For ${player.name} (${player.position}, ${player.team}), use your search capabilities to find the latest news, coach-speak, or beat reporter sentiment for their next game.
-      Respond with a single, concise sentence summarizing the sentiment. If no specific news is found, respond with "No specific news."`;
+        You are a DFS data analyst. For the game involving the ${team}, provide two things:
+        1. The current Vegas odds: spread for ${team} and the game total.
+        2. For each player provided, your best fantasy point projections (mean, 90th percentile ceiling, 10th percentile floor).
+        Return a single JSON object.
+
+        Players: ${JSON.stringify(playerList)}
+    `;
+    const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+            vegas: {
+                type: Type.OBJECT,
+                properties: { teamASpread: { type: Type.NUMBER }, gameTotal: { type: Type.NUMBER } },
+                required: ['teamASpread', 'gameTotal']
+            },
+            projections: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        meanFpts: { type: Type.NUMBER },
+                        ceilingFpts: { type: Type.NUMBER },
+                        floorFpts: { type: Type.NUMBER },
+                    },
+                    required: ['id', 'meanFpts', 'ceilingFpts', 'floorFpts']
+                }
+            }
+        },
+        required: ['vegas', 'projections']
+    };
+
     try {
-      const responseText = await generateContent(prompt, 20000); // 20s timeout per player
-      return { sentimentSummary: responseText.trim() };
+        const responseText = await generateContent(prompt, { responseSchema }, 120000, 2);
+        return JSON.parse(responseText);
     } catch (error) {
-      console.error(`Error fetching sentiment for ${player.name}:`, error);
-      return { sentimentSummary: "No specific news." }; // Default value on failure
+        console.error("Vegas & Projections AI Error:", error);
+        throw error;
     }
-  };
+}
 
-  const sentimentPromises = players.map(p => fetchSentiment(p));
-  const sentimentResults = await Promise.allSettled(sentimentPromises);
+interface CorrelationItem {
+    playerId: string;
+    correlatedPlayers: {
+        playerId: string;
+        coefficient: number;
+    }[];
+}
 
-  // 3. Combine results
-  return playersWithUsage.map((player, index) => {
-    const result = sentimentResults[index];
-    if (result.status === 'fulfilled') {
-      return { ...player, ...result.value };
+interface AdvancedMetricsResult {
+    metrics: {
+        id: string;
+        projectedUsage: 'Starter' | 'Role Player' | 'Backup' | 'Unlikely';
+        sentimentSummary: string;
+        coordinatorTendency: 'pass-heavy' | 'run-heavy' | 'balanced';
+        blitzRateDefense: number;
+    }[];
+    correlations: CorrelationItem[];
+}
+
+async function getAdvancedMetricsAndCorrelationsAI(players: Player[]): Promise<AdvancedMetricsResult | null> {
+    if (players.length === 0) return null;
+    const playerList = players.map(p => ({ id: p.id, name: p.name, team: p.team }));
+    const prompt = `
+        You are a DFS data analyst. For each player provided, return their projected usage, a 1-sentence sentiment summary, their team's offensive coordinator tendency, and their opponent's defensive blitz rate.
+        Also, generate player correlations. The "correlations" key should be an array of objects. Each object must have a "playerId" (string) and a "correlatedPlayers" (array of objects). Each object in "correlatedPlayers" must have a "playerId" (string) and a "coefficient" (number).
+        Example: "correlations": [{ "playerId": "p1", "correlatedPlayers": [{ "playerId": "p2", "coefficient": 0.5 }] }]
+        Return a single JSON object.
+
+        Players: ${JSON.stringify(playerList)}
+    `;
+
+     const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+            metrics: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        projectedUsage: { type: Type.STRING, enum: ['Starter', 'Role Player', 'Backup', 'Unlikely'] },
+                        sentimentSummary: { type: Type.STRING },
+                        coordinatorTendency: { type: Type.STRING, enum: ['pass-heavy', 'run-heavy', 'balanced'] },
+                        blitzRateDefense: { type: Type.NUMBER },
+                    },
+                     required: ['id', 'projectedUsage', 'sentimentSummary', 'coordinatorTendency', 'blitzRateDefense']
+                }
+            },
+            correlations: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        playerId: { type: Type.STRING },
+                        correlatedPlayers: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    playerId: { type: Type.STRING },
+                                    coefficient: { type: Type.NUMBER }
+                                },
+                                required: ['playerId', 'coefficient']
+                            }
+                        }
+                    },
+                    required: ['playerId', 'correlatedPlayers']
+                }
+            }
+        },
+        required: ['metrics', 'correlations']
+    };
+
+     try {
+        const responseText = await generateContent(prompt, { responseSchema }, 180000, 2);
+        return JSON.parse(responseText);
+    } catch (error) {
+        console.error("Advanced Metrics & Correlations AI Error:", error);
+        throw error;
     }
-    return player; // Keep original player data if promise failed
-  });
 }
 
 export async function getPlayerDnaReport(player: Player): Promise<string> {
@@ -206,14 +250,14 @@ export async function getPlayerDnaReport(player: Player): Promise<string> {
         The report should be a concise, actionable summary covering the following key areas:
 
         1.  **Usage & Role:** What is their specific role in the offense? (e.g., "High-volume possession receiver", "Red zone rushing specialist", "Deep threat").
-        2.  **Key Strengths (based on advanced stats):** Mention 1-2 key strengths supported by metrics like Red Zone Target Share, Average Depth of Target (aDOT), Yards After Catch (YAC), Yards Per Route Run, or Breakaway Run Rate.
+        2.  **Key Strengths (based on advanced stats):** Mention 1-2 key strengths supported by metrics like Red Zone Target Share, Average Depth of Target (aDOT), Yards After Catch (YAC), or Yards Per Route Run.
         3.  **Key Weaknesses / Concerns:** Mention 1-2 weaknesses or concerns, such as a tough defensive matchup (e.g., "facing a shutdown cornerback"), inefficiency, or volatility.
         4.  **Path to a Ceiling Performance:** In one sentence, describe what needs to happen in the game for this player to have a slate-winning performance.
 
         Respond with only the markdown-formatted report.
     `;
     try {
-        const report = await generateContent(prompt, 45000); // Give it a longer timeout
+        const report = await generateContent(prompt, undefined, 90000, 2);
         return report;
     } catch (error) {
         console.error(`Error generating DNA report for ${player.name}:`, error);
@@ -226,87 +270,156 @@ export async function getPlayerDnaReport(player: Player): Promise<string> {
 
 export async function handleFileUpload(file: File, setLoadingStatus: (status: string) => void): Promise<UploadData> {
   setLoadingStatus("Parsing CSV...");
-  let players = await parseCsv(file);
-
-  setLoadingStatus("Projecting ownership...");
-  players = generateOwnershipProjections(players);
+  let basePlayers = await parseCsv(file);
+  const playerMap = new Map(basePlayers.map(p => [p.id, { ...p }]));
   
-  // --- Validation Waterfall ---
-  const finalStatuses: Record<string, PlayerStatus> = {};
   const reportParts: string[] = [];
 
-  // 1. Initial Pass from CSV data
-  const excludedFromCsv: string[] = [];
-  players.forEach(p => {
-      const status = p.injuryStatus?.toUpperCase();
-      if (status === 'IR' || status === 'O' || status === 'OUT') {
-          finalStatuses[p.id] = PlayerStatus.EXCLUDED;
-          excludedFromCsv.push(`${p.name} (IR/Out from CSV)`);
-      } else {
-          finalStatuses[p.id] = PlayerStatus.INCLUDED;
-      }
+  // --- Validation Waterfall ---
+  setLoadingStatus("Verifying injuries from CSV...");
+  const initialStatuses: Record<string, PlayerStatus> = {};
+  basePlayers.forEach(p => {
+    const status = p.injuryStatus?.toUpperCase();
+    initialStatuses[p.id] = (status === 'IR' || status === 'O' || status === 'OUT') ? PlayerStatus.EXCLUDED : PlayerStatus.INCLUDED;
   });
-  if (excludedFromCsv.length > 0) {
-      reportParts.push(`Initial Exclusions from CSV: ${excludedFromCsv.join(', ')}.`);
-  }
 
-  // 2. Primary Check with Sleeper API
-  setLoadingStatus("Fetching injury data from Sleeper...");
-  const { sleeperStatuses, playersToAICheck, sleeperReport } = await getPlayerStatusesFromSleeper(players, finalStatuses);
-  Object.assign(finalStatuses, sleeperStatuses);
+  setLoadingStatus("Verifying injuries (Sleeper API)...");
+  const { sleeperStatuses, playersToAICheck, sleeperReport } = await getPlayerStatusesFromSleeper(basePlayers, initialStatuses);
   reportParts.push(sleeperReport);
 
-  // 3. AI Fallback for remaining players
-  if (playersToAICheck.length > 0) {
-    setLoadingStatus("Validating with AI (fallback)...");
-    const { playersToExclude: aiExcludes, validationSummary: aiReport } = await validatePlayersWithAI(playersToAICheck);
-    aiExcludes.forEach(id => finalStatuses[id] = PlayerStatus.EXCLUDED);
-    reportParts.push(aiReport);
-  }
+  // Merge Sleeper statuses
+  Object.keys(sleeperStatuses).forEach(id => initialStatuses[id] = sleeperStatuses[id]);
 
-  // --- Enrichment Waterfall (Parallel Processing) ---
-  setLoadingStatus("Enriching game data...");
+  // --- Parallel AI Analysis (Now Fully Resilient with Batching) ---
+  setLoadingStatus("Running AI analysis...");
   
-  const team = players[0].team;
-  const opponent = players[0].opponent;
+  const playerBatches = batch(basePlayers, 15);
 
-  const gameScriptPromise = (async () => {
-    try {
-      const gameData = await getGameDataFromOddsApi(team, opponent);
-      if (gameData) {
-        return { data: gameData.gameScriptScore, report: `Game Script Score from Odds API: ${gameData.gameScriptScore.toFixed(1)}` };
-      }
-    } catch (e) { console.error("Odds API Error:", e) }
-    // Fallback
-    return _enrichGameScriptWithAI(team, opponent);
-  })();
-  
-  const [tendenciesPromise, blitzRatesPromise] = await Promise.all([
-    _enrichCoordinatorTendenciesWithAI(team, opponent),
-    _enrichBlitzRatesWithAI(team, opponent),
+  const [
+    aiValidationResult,
+    ownershipResult,
+    vegasAndProjectionsBatchResults,
+    advancedMetricsBatchResults
+  ] = await Promise.all([
+    validatePlayersWithAI(playersToAICheck).catch(err => {
+        console.error("AI validation call failed but we are continuing.", err);
+        reportParts.push(`Warning: AI player validation failed. Error: ${err.message}`);
+        return { playersToExclude: new Set(), validationSummary: "AI validation call failed." };
+    }),
+    getAIOwnershipAnalysis(basePlayers).catch(err => {
+        console.error("AI ownership call failed but we are continuing.", err);
+        reportParts.push(`Warning: Could not load AI ownership. Using defaults. Error: ${err.message}`);
+        return null;
+    }),
+    Promise.all(playerBatches.map(b => getVegasAndProjectionsAI(b))).catch(err => {
+        console.error("One or more Vegas & projections calls failed but we are continuing.", err);
+        reportParts.push(`Warning: Could not load AI projections. Using FPPG from CSV. Error: ${err.message}`);
+        return null;
+    }),
+    Promise.all(playerBatches.map(b => getAdvancedMetricsAndCorrelationsAI(b))).catch(err => {
+        console.error("One or more advanced metrics calls failed but we are continuing.", err);
+        reportParts.push(`Warning: Could not load advanced metrics. Using defaults. Error: ${err.message}`);
+        return null;
+    })
   ]);
 
-  const gameScriptResult = await gameScriptPromise;
+  // --- Assemble Final Player Data ---
+  setLoadingStatus("Assembling player profiles...");
 
-  reportParts.push(gameScriptResult.report, tendenciesPromise.report, blitzRatesPromise.report);
+  // Process AI validation (Safe access)
+  if (aiValidationResult?.validationSummary) reportParts.push(aiValidationResult.validationSummary);
+  aiValidationResult?.playersToExclude.forEach(id => initialStatuses[id] = PlayerStatus.EXCLUDED);
 
-  players = players.map(p => ({
-    ...p,
-    gameScriptScore: gameScriptResult.data,
-    coordinatorTendency: tendenciesPromise.data[p.team]?.coordinatorTendency || 'balanced',
-    blitzRateDefense: blitzRatesPromise.data[p.opponent]?.blitzRateDefense || 0,
-  }));
+  const finalStatuses = initialStatuses;
+  const slateNotes = ownershipResult?.slateNotes ?? "AI ownership analysis was unavailable.";
+  
+  // Create maps for efficient lookup (Safe access)
+  const ownershipMap = ownershipResult ? new Map(ownershipResult.players.map(p => [p.id, p])) : new Map();
+  
+  // MERGE BATCHED RESULTS
+  const projectionsMap = new Map<string, { id: string; meanFpts: number; ceilingFpts: number; floorFpts: number; }>();
+  vegasAndProjectionsBatchResults?.forEach(result => {
+      result?.projections.forEach(p => projectionsMap.set(p.id, p));
+  });
+
+  const metricsMap = new Map<string, any>();
+  const correlationsMap = new Map<string, Record<string, number>>();
+  if (advancedMetricsBatchResults) {
+    for (const result of advancedMetricsBatchResults) {
+        if (!result) continue;
+        result.metrics.forEach(m => metricsMap.set(m.id, m));
+        for (const corr of result.correlations) {
+            const playerCorrelations: Record<string, number> = correlationsMap.get(corr.playerId) || {};
+            for (const correlated of corr.correlatedPlayers) {
+                playerCorrelations[correlated.playerId] = correlated.coefficient;
+            }
+            correlationsMap.set(corr.playerId, playerCorrelations);
+        }
+    }
+  }
+
+  // Enrich player data
+  playerMap.forEach((player, id) => {
+    const ownership = ownershipMap.get(id);
+    const projection = projectionsMap.get(id);
+    const metric = metricsMap.get(id);
+
+    if (ownership) {
+        player.flexOwnership = ownership.flexOwnership;
+        player.mvpOwnership = ownership.mvpOwnership;
+        player.leverage = ownership.leverage;
+    }
+    
+    if (projection) {
+        player.fpts = projection.meanFpts;
+        player.scenarioFpts = {
+            ceiling: projection.ceilingFpts,
+            floor: projection.floorFpts,
+        };
+    }
+
+    if (metric) {
+        player.projectedUsage = metric.projectedUsage;
+        player.sentimentSummary = metric.sentimentSummary;
+        player.coordinatorTendency = metric.coordinatorTendency;
+        player.blitzRateDefense = metric.blitzRateDefense;
+    }
+    
+    player.correlations = correlationsMap.get(id) || {};
+  });
+
+  // Add Vegas data to all players (from the first successful batch)
+  const firstValidVegasResult = vegasAndProjectionsBatchResults?.find(r => r?.vegas);
+  if (firstValidVegasResult) {
+      const team = basePlayers[0]?.team;
+      const { teamASpread, gameTotal } = firstValidVegasResult.vegas;
+      playerMap.forEach(player => {
+          const isHomeTeam = player.team === team;
+          const spread = isHomeTeam ? teamASpread : -teamASpread;
+          player.vegas = {
+              spread,
+              total: gameTotal,
+              impliedTeamTotal: (gameTotal / 2) - (spread / 2),
+          };
+      });
+      reportParts.push("Projections & Vegas odds loaded.");
+  }
+
+   if (advancedMetricsBatchResults) {
+       reportParts.push("Advanced metrics & correlations loaded.");
+   }
+
+
+  let finalPlayers = Array.from(playerMap.values());
 
   // --- Post-Validation Steps ---
-  setLoadingStatus("Analyzing player value based on injuries...");
-  players = analyzePlayerValue(players, finalStatuses);
-  
-  setLoadingStatus("Analyzing usage & sentiment...");
-  players = await enrichWithUsageAndSentiment(players);
+  setLoadingStatus("Analyzing value from injuries...");
+  finalPlayers = analyzePlayerValue(finalPlayers, finalStatuses);
 
   return {
-    players,
+    players: finalPlayers,
     statuses: finalStatuses,
     validationReport: reportParts.join('\n').trim(),
+    slateNotes,
   };
 }
