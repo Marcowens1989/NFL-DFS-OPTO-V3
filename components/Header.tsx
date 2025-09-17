@@ -39,6 +39,18 @@ const Header: React.FC<HeaderProps> = ({ activeTab, onTabChange }) => {
             >
               Projections Lab
             </button>
+            <button
+              onClick={() => onTabChange('post-slate')}
+              className={getButtonClass('post-slate')}
+            >
+              Post-Slate Analysis
+            </button>
+            <button
+              onClick={() => onTabChange('backtest')}
+              className={getButtonClass('backtest')}
+            >
+              Backtest Engine
+            </button>
           </nav>
         </div>
       </div>

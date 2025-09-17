@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { logger } from './loggingService';
 
 // Cache the client instance.
 let geminiClient: GoogleGenAI | null = null;
@@ -16,12 +17,13 @@ export async function generateContent(
     prompt: string, 
     configOverride?: object, 
     timeout: number = 30000,
-    retries: number = 1
+    retries: number = 5 // Increased default retries for resilience
 ): Promise<string> {
     if (!geminiClient) {
         const apiKey = process.env.API_KEY;
         if (!apiKey) {
             // This is a critical configuration error.
+            logger.error("API Key is not configured.", { service: 'Gemini' });
             throw new Error("Your API Key is not configured. Please ensure the API_KEY is set correctly.");
         }
         geminiClient = new GoogleGenAI({ apiKey });
@@ -47,12 +49,7 @@ export async function generateContent(
     let lastError: Error | null = null;
     for (let i = 0; i <= retries; i++) {
         try {
-            if (i > 0) {
-                console.log(`Retrying Gemini call (${i}/${retries}) after timeout...`);
-                await new Promise(res => setTimeout(res, 2000 * i)); // Simple exponential backoff
-            }
-            
-            console.log(`Attempting to generate content with Gemini (Attempt ${i+1}/${retries+1})...`);
+            logger.info(`Attempting to generate content with Gemini`, { attempt: i + 1, total_attempts: retries + 1 });
 
             const apiCall = geminiClient.models.generateContent({
                 model: 'gemini-2.5-flash',
@@ -68,7 +65,7 @@ export async function generateContent(
             // Race the API call against the timeout.
             const response = await Promise.race([apiCall, timeoutPromise]);
 
-            console.log("Gemini call successful.");
+            logger.info("Gemini call successful.");
             
             // According to guidelines, response.text is the correct way to get the text.
             const text = response.text;
@@ -81,15 +78,35 @@ export async function generateContent(
 
         } catch (error) {
             lastError = error instanceof Error ? error : new Error(String(error));
-            // Only retry on timeout errors
-            if (!lastError.message.toLowerCase().includes("timed out")) {
+            const errorMessage = lastError.message.toLowerCase();
+            const isRateLimitError = errorMessage.includes("429") || errorMessage.includes("resource_exhausted");
+            const isTimeoutError = errorMessage.includes("timed out");
+
+            // If it's a critical error (not retryable), break immediately.
+            if (!isRateLimitError && !isTimeoutError) {
                 break;
+            }
+
+            // If this was the last retry attempt, break the loop to throw the error.
+            if (i === retries) {
+                break;
+            }
+            
+            // Implement specific exponential backoff logic
+            if (isRateLimitError) {
+                const backoffSeconds = 15 * Math.pow(2, i); // Exponential backoff: 15s, 30s, 60s, ...
+                logger.warn(`Rate limit hit. Retrying in ${backoffSeconds} seconds...`, { attempt: i + 1, retries });
+                await new Promise(res => setTimeout(res, backoffSeconds * 1000));
+            } else if (isTimeoutError) {
+                const backoffSeconds = 2 * Math.pow(2, i); // Shorter backoff for timeouts: 2s, 4s, 8s, ...
+                logger.warn(`Request timed out. Retrying in ${backoffSeconds} seconds...`, { attempt: i + 1, retries });
+                await new Promise(res => setTimeout(res, backoffSeconds * 1000));
             }
         }
     }
 
     // If all retries failed, throw a formatted error.
-    console.error("Gemini API call failed after all retries.", lastError);
+    logger.error("Gemini API call failed after all retries.", { error: lastError });
 
     const errorMessage = lastError?.message || "An unknown error occurred.";
     let displayError = `AI Generation Failed: ${errorMessage}`;
@@ -97,6 +114,8 @@ export async function generateContent(
     // Create more user-friendly error messages for common issues.
     if (errorMessage.includes("API key not valid") || errorMessage.includes("API Key is not configured")) {
         displayError = "AI Generation Failed: Your API Key is either missing or invalid. Please ensure the API_KEY is configured correctly.";
+    } else if (errorMessage.includes("429") || errorMessage.toLowerCase().includes("resource_exhausted") || errorMessage.toLowerCase().includes("quota")) {
+        displayError = "AI Generation Failed: API rate limit exceeded. The simulation will continue but may be slower. Please check your plan and billing details.";
     } else if (errorMessage.includes("timed out")) {
         // Preserve the specific timeout duration from the error message
         displayError = `AI Generation Failed: ${errorMessage}. The service might be busy. Please try again later.`;

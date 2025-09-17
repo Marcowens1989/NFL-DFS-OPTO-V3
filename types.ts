@@ -2,7 +2,6 @@
 export interface StatProjections {
   passingYards?: number;
   passingTds?: number;
-
   interceptions?: number;
   rushingYards?: number;
   rushingTds?: number;
@@ -22,7 +21,7 @@ export interface Player {
   name: string;
   position: string;
   salary: number;
-  fpts: number; // Represents the MEAN projection
+  fpts: number; // Represents the MEAN projection, dynamically calculated
   mvpOwnership: number;
   flexOwnership: number;
   team: string;
@@ -32,6 +31,12 @@ export interface Player {
   usageBoost: number;
   notes: string;
 
+  // --- NEW: Granular Projections for Dynamic Scoring ---
+  statProjections?: {
+    mean: StatProjections;
+    ceiling: StatProjections;
+  };
+
   // --- NEW: Game & Scenario Modeling ---
   vegas: {
       spread: number; // e.g., -7 for favorite, 7 for underdog
@@ -40,7 +45,7 @@ export interface Player {
   } | null;
 
   scenarioFpts: {
-      ceiling: number; // 90th percentile outcome
+      ceiling: number; // 90th percentile outcome, dynamically calculated
       floor: number;   // 10th percentile outcome
   };
 
@@ -122,6 +127,38 @@ export interface StatWeights {
   redZoneTouches?: number;
   targetShare?: number;
   rushAttemptShare?: number;
+  // --- Sabermetric Synthesis Weights ---
+  yardsPerRouteRun?: number;
+  aDOT?: number;
+  yardsAfterCatch?: number;
+  routesRun?: number;
+  avoidedTackles?: number;
+  yardsCreatedPerTouch?: number;
+  playActionPassRate?: number;
+  timeToThrow?: number;
+  cleanPocketCompletion?: number;
+  underPressureCompletion?: number;
+  deepBallCompletion?: number;
+  redZoneConversionRate?: number;
+  offensiveLineRank?: number;
+  defensiveLineRank?: number;
+  passRushWinRate?: number;
+  runStopWinRate?: number;
+  secondaryCoverageRank?: number;
+  playsPerGame?: number;
+  neutralSituationPace?: number;
+  neutralSituationPassRate?: number;
+  strengthOfSchedule?: number;
+  weatherFactor?: number;
+  homeFieldAdvantageScore?: number;
+  coachingAggressivenessScore?: number;
+  turnoverDifferential?: number;
+  // --- NEW: Correlation-Infused Weights ---
+  qb_passYds?: number;
+  qb_rushYds?: number;
+  topTeammate_recYds?: number;
+  topTeammate_rushYds?: number;
+  topTeammate_receptions?: number;
 }
 
 // Expanded interface for holding parsed historical data, ready for ML processing
@@ -165,11 +202,37 @@ export interface HistoricalGame {
     pregameContext: {
         injuries: string[];
         vegasLine: string;
+        // --- NEW: Advanced Team-Level Sabermetrics ---
+        advancedTeamMetrics?: {
+            [teamAbbr: string]: {
+                offensiveLineRank?: number;
+                defensiveLineRank?: number;
+                passRushWinRate?: number;
+                runStopWinRate?: number;
+                secondaryCoverageRank?: number;
+                playsPerGame?: number;
+                neutralSituationPace?: number;
+                neutralSituationPassRate?: number;
+                coachingAggressivenessScore?: number;
+                turnoverDifferential?: number;
+            }
+        };
+        strengthOfSchedule?: number;
+        weatherFactor?: number;
+        homeFieldAdvantageScore?: number;
+        teamDna?: {
+            [teamAbbr: string]: {
+                offensiveScheme?: string;
+                defensiveScheme?: string;
+            }
+        };
     };
     players: {
         name: string;
         team: string;
         position: string;
+        archetype?: string;
+        matchupAdvantageScore?: number; // NEW: For Matchup Supremacy Engine
         stats: {
             passYds?: number; passTds?: number; interceptions?: number;
             rushYds?: number; rushTds?: number;
@@ -182,6 +245,19 @@ export interface HistoricalGame {
             redZoneTouches?: number;
             targetShare?: number;
             rushAttemptShare?: number;
+            // --- NEW: Granular Sabermetrics ---
+            yardsPerRouteRun?: number;
+            aDOT?: number;
+            yardsAfterCatch?: number;
+            routesRun?: number;
+            avoidedTackles?: number;
+            yardsCreatedPerTouch?: number;
+            playActionPassRate?: number;
+            timeToThrow?: number;
+            cleanPocketCompletion?: number;
+            underPressureCompletion?: number;
+            deepBallCompletion?: number;
+            redZoneConversionRate?: number;
         };
         actualFdp: number;
         salary?: number;
@@ -200,17 +276,24 @@ export interface ModelDiscoveryReport {
 }
 
 export interface TunedModel {
-    id: string;
-    name: string;
-    createdAt: string;
-    weights: StatWeights;
-    performance: {
-        mae: number; // Mean Absolute Error on the training set
-        gamesSimulated?: number;
-        validationMae?: number; // Mean Absolute Error on the BLIND validation set
-    };
-    sourceDescription: string;
-    gameScript?: 'Neutral' | 'Shootout' | 'Defensive Struggle' | 'Blowout';
+  id: string;
+  name: string;
+  createdAt: string;
+  weights: StatWeights;
+  performance: {
+    mae: number; // Mean Absolute Error on the training set
+    gamesSimulated?: number;
+    validationMae?: number; // Mean Absolute Error on the BLIND validation set
+  };
+  sourceDescription: string;
+  gameScript?: 'Neutral' | 'Shootout' | 'Defensive Struggle' | 'Blowout';
+  // --- NEW: For Archetype & DNA Model ---
+  archetype?: string;
+  teamDna?: {
+    offensiveScheme?: string;
+    defensiveScheme?: string;
+    paceOfPlay?: string;
+  };
 }
 
 
@@ -218,6 +301,11 @@ export interface ValidationReport {
     trainingSetSize: number;
     validationSetSize: number;
     models: (TunedModel & { performance: { validationMae: number } })[]; // Ensure validationMae is present
+}
+
+export interface SimulationParams {
+  trainValidateSplit: number; // Percentage (0-100) for training set size
+  topKEnsemble: number; // Number of top models to include in the ensemble
 }
 
 // --- NEW: Types for Post-Slate Analysis ---
@@ -250,4 +338,36 @@ export interface LeakfinderReport {
     strengths: string[]; // e.g., "Good at identifying low-owned RBs"
     leaks: string[]; // e.g., "Tends to over-expose players from favorite team"
     playerExposureAnalysis: PlayerExposureAnalysis[];
+}
+
+// --- NEW: Types for Backtesting Engine ---
+export interface OptimizerSettings {
+  lockedPlayerIds: string[];
+  excludedPlayerIds: string[];
+  numberOfLineups: number;
+  salaryCap: number;
+  stackingRules: StackingRules;
+  optimizationTarget: 'mean' | 'ceiling';
+}
+
+export interface BacktestGameResult {
+    gameId: string;
+    description: string;
+    generatedLineups: Lineup[];
+    topScore: number;
+}
+
+export interface BacktestReport {
+    settings: OptimizerSettings;
+    gameResults: BacktestGameResult[];
+    summary: {
+        averageScore: number;
+        totalGames: number;
+    };
+    playerExposures: {
+        [playerName: string]: {
+            count: number;
+            percentage: number;
+        }
+    }
 }

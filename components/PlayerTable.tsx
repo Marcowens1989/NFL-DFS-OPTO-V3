@@ -15,46 +15,40 @@ interface PlayerTableProps {
   onPlayerSelect: (player: Player) => void;
 }
 
-type SortableKeys = 'fpts' | 'salary' | 'flexOwnership' | 'mvpOwnership' | 'value' | 'ceilingFpts' | 'leverage';
+type SortableKeys = 'fpts' | 'salary' | 'flexOwnership' | 'mvpOwnership' | 'value' | 'ceilingFpts' | 'leverage' | 'topCorrelation';
 
 interface SortConfig {
   key: SortableKeys | null;
   direction: 'ascending' | 'descending';
 }
 
-const UsageBadge: React.FC<{ usage: Player['projectedUsage'], sentiment: string }> = ({ usage, sentiment }) => {
-    const usageStyles: Record<Player['projectedUsage'], string> = {
-        'Starter': 'bg-green-500/20 text-green-300 border-green-500',
-        'Role Player': 'bg-yellow-500/20 text-yellow-300 border-yellow-500',
-        'Backup': 'bg-orange-500/20 text-orange-300 border-orange-500',
-        'Unlikely': 'bg-red-500/20 text-red-300 border-red-500',
-    };
+const getTopCorrelation = (player: Player, allPlayers: Player[]): { name: string; value: number } | null => {
+    if (!player.correlations || Object.keys(player.correlations).length === 0) {
+        return null;
+    }
+    const allPlayersMap = new Map(allPlayers.map(p => [p.id, p.name]));
+    let topCorrId: string | null = null;
+    let topCorrValue = -Infinity;
 
-    return (
-        <span
-            title={sentiment}
-            className={`px-2 py-1 text-xs font-semibold rounded-full border ${usageStyles[usage] || 'bg-gray-500/20 text-gray-300'}`}
-        >
-            {usage}
-        </span>
-    );
-};
-
-const LeverageBadge: React.FC<{ score: number }> = ({ score }) => {
-    let colorClasses = 'bg-gray-500/20 text-gray-300 border-gray-500';
-    if (score >= 85) {
-        colorClasses = 'bg-green-500/20 text-green-300 border-green-500';
-    } else if (score >= 50) {
-        colorClasses = 'bg-yellow-500/20 text-yellow-300 border-yellow-500';
-    } else if (score > 0) {
-        colorClasses = 'bg-red-500/20 text-red-300 border-red-500';
+    for (const [teammateId, corrValue] of Object.entries(player.correlations)) {
+        if (Math.abs(corrValue) > Math.abs(topCorrValue)) {
+            topCorrValue = corrValue;
+            topCorrId = teammateId;
+        }
     }
     
-    return (
-        <span className={`px-2 py-1 text-xs font-bold rounded-full border ${colorClasses}`}>
-            {score.toFixed(0)}
-        </span>
-    );
+    if (topCorrId && allPlayersMap.has(topCorrId)) {
+        return { name: allPlayersMap.get(topCorrId)!, value: topCorrValue };
+    }
+    return null;
+};
+
+const getCorrelationColor = (value: number): string => {
+    if (value > 0.4) return 'bg-green-500/30 text-green-300 border border-green-500'; // Strong positive
+    if (value > 0.15) return 'bg-green-500/10 text-green-400 border border-green-500/40'; // Positive
+    if (value < -0.4) return 'bg-red-500/30 text-red-300 border border-red-500'; // Strong negative
+    if (value < -0.15) return 'bg-red-500/10 text-red-400 border border-red-500/40'; // Negative
+    return 'bg-gray-500/10 text-gray-400 border border-gray-500/40'; // Neutral
 };
 
 
@@ -67,26 +61,27 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRank
       sortableItems.sort((a, b) => {
         let aValue, bValue;
 
-        if (sortConfig.key === 'value') {
-          aValue = a.salary > 0 ? a.fpts / (a.salary / 1000) : 0;
-          bValue = b.salary > 0 ? b.fpts / (b.salary / 1000) : 0;
-        } else if (sortConfig.key === 'ceilingFpts') {
-          aValue = a.scenarioFpts.ceiling;
-          bValue = b.scenarioFpts.ceiling;
-        } else if (sortConfig.key === 'leverage') {
-          aValue = a.leverage;
-          bValue = b.leverage;
-        } else {
-          aValue = a[sortConfig.key];
-          bValue = b[sortConfig.key];
+        switch(sortConfig.key) {
+            case 'value':
+                aValue = a.salary > 0 ? a.fpts / (a.salary / 1000) : 0;
+                bValue = b.salary > 0 ? b.fpts / (b.salary / 1000) : 0;
+                break;
+            case 'ceilingFpts':
+                aValue = a.scenarioFpts.ceiling;
+                bValue = b.scenarioFpts.ceiling;
+                break;
+            case 'topCorrelation':
+                aValue = Math.abs(getTopCorrelation(a, players)?.value ?? 0);
+                bValue = Math.abs(getTopCorrelation(b, players)?.value ?? 0);
+                break;
+            default:
+                aValue = a[sortConfig.key as keyof Player] as number;
+                bValue = b[sortConfig.key as keyof Player] as number;
+                break;
         }
         
-        if (aValue < bValue) {
-          return sortConfig.direction === 'ascending' ? -1 : 1;
-        }
-        if (aValue > bValue) {
-          return sortConfig.direction === 'ascending' ? 1 : -1;
-        }
+        if (aValue < bValue) return sortConfig.direction === 'ascending' ? -1 : 1;
+        if (aValue > bValue) return sortConfig.direction === 'ascending' ? 1 : -1;
         return 0;
       });
     }
@@ -102,7 +97,7 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRank
   };
   
   const getSortIndicator = (key: SortableKeys) => {
-    if (sortConfig.key !== key) return null;
+    if (sortConfig.key !== key) return ' ';
     return sortConfig.direction === 'descending' ? '↓' : '↑';
   };
   
@@ -126,26 +121,24 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRank
       <table className="w-full text-sm text-left">
         <thead className="text-xs text-white font-bold uppercase bg-gray-800 sticky top-0">
           <tr>
-            <th scope="col" className="px-4 py-3 text-center">Rank</th>
             <th scope="col" className="px-4 py-3">Player</th>
-            <th scope="col" className="px-2 py-3 text-center">Usage</th>
             <th scope="col" className={getHeaderClass('value')} onClick={() => requestSort('value')}>
-                Value<span className="inline-block w-4">{getSortIndicator('value')}</span>
+                Value <span className="inline-block w-4">{getSortIndicator('value')}</span>
             </th>
             <th scope="col" className={getHeaderClass('fpts')} onClick={() => requestSort('fpts')}>
-                Mean<span className="inline-block w-4">{getSortIndicator('fpts')}</span>
+                Mean <span className="inline-block w-4">{getSortIndicator('fpts')}</span>
             </th>
             <th scope="col" className={getHeaderClass('ceilingFpts')} onClick={() => requestSort('ceilingFpts')}>
-                Ceiling<span className="inline-block w-4">{getSortIndicator('ceilingFpts')}</span>
+                Ceiling <span className="inline-block w-4">{getSortIndicator('ceilingFpts')}</span>
             </th>
             <th scope="col" className={getHeaderClass('salary')} onClick={() => requestSort('salary')}>
-                Salary<span className="inline-block w-4">{getSortIndicator('salary')}</span>
+                Salary <span className="inline-block w-4">{getSortIndicator('salary')}</span>
             </th>
             <th scope="col" className={getHeaderClass('flexOwnership')} onClick={() => requestSort('flexOwnership')}>
-                Own%<span className="inline-block w-4">{getSortIndicator('flexOwnership')}</span>
+                Own% <span className="inline-block w-4">{getSortIndicator('flexOwnership')}</span>
             </th>
-             <th scope="col" className={getHeaderClass('leverage')} onClick={() => requestSort('leverage')}>
-                Leverage<span className="inline-block w-4">{getSortIndicator('leverage')}</span>
+             <th scope="col" className={getHeaderClass('topCorrelation')} onClick={() => requestSort('topCorrelation')}>
+                Top Corr. <span className="inline-block w-4">{getSortIndicator('topCorrelation')}</span>
             </th>
             <th scope="col" className="px-4 py-3 text-center">Actions</th>
           </tr>
@@ -153,37 +146,23 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRank
         <tbody>
           {sortedPlayers.map((player) => {
             const status = statuses[player.id] || PlayerStatus.INCLUDED;
-            const rank = playerRanks.get(player.id);
-            const tooltipText = `FPTS: ${player.fpts.toFixed(2)}\nSalary: $${player.salary.toLocaleString()}\nFLEX Own%: ${player.flexOwnership.toFixed(1)}%\nMVP Own%: ${player.mvpOwnership.toFixed(1)}%`;
+            const topCorrelation = getTopCorrelation(player, players);
 
             return (
               <tr key={player.id} className={`border-b border-gray-700 transition-colors duration-200 ${getRowClass(status)}`}>
-                <td className="px-4 py-2 font-medium text-white whitespace-nowrap text-center">{rank}</td>
                 <td className="px-4 py-2 font-medium text-white whitespace-nowrap">
                    <div className="flex items-center gap-3">
                       <img src={getTeamLogoUrl(player.team)} alt={`${player.team} logo`} className="h-6 w-6 object-contain" />
                       <div>
                         <div className="flex items-center gap-2">
-                            <button 
-                                onClick={() => onPlayerSelect(player)} 
-                                className="text-left hover:underline focus:outline-none focus:underline" 
-                                title={tooltipText}
-                            >
+                            <button onClick={() => onPlayerSelect(player)} className="text-left hover:underline focus:outline-none focus:underline">
                                 {player.name}
                             </button>
                             {player.playerDnaReport && <DnaIcon />}
-                            {player.usageBoost > 0 && (
-                                <div title={`Projected Gain: +${player.usageBoost.toFixed(2)} FDP ↑\nReason: ${player.notes}`}>
-                                    <span role="img" aria-label="Rising stock">📈</span>
-                                </div>
-                            )}
                         </div>
                         <span className="text-gray-400 text-xs">{player.position}</span>
                       </div>
                    </div>
-                </td>
-                <td className="px-2 py-2 text-center">
-                    <UsageBadge usage={player.projectedUsage} sentiment={player.sentimentSummary} />
                 </td>
                 <td className="px-4 py-2 text-right">
                   {player.salary > 0 ? (player.fpts / (player.salary / 1000)).toFixed(2) : '0.00'}
@@ -193,7 +172,14 @@ const PlayerTable: React.FC<PlayerTableProps> = ({ players, statuses, playerRank
                 <td className="px-4 py-2 text-right">${player.salary.toLocaleString()}</td>
                 <td className="px-4 py-2 text-right">{player.flexOwnership.toFixed(1)}%</td>
                 <td className="px-4 py-2 text-center">
-                    <LeverageBadge score={player.leverage} />
+                    {topCorrelation ? (
+                        <div className={`flex items-baseline justify-center gap-1.5 px-2 py-1 rounded-full text-xs transition-colors ${getCorrelationColor(topCorrelation.value)}`}>
+                            <span className="font-semibold truncate max-w-[80px]">{topCorrelation.name.split(' ').pop()}</span>
+                            <span className="font-mono text-xs">{topCorrelation.value.toFixed(2)}</span>
+                        </div>
+                    ) : (
+                        <span className="text-gray-600">-</span>
+                    )}
                 </td>
                 <td className="px-4 py-2">
                   <div className="flex justify-center items-center space-x-2">

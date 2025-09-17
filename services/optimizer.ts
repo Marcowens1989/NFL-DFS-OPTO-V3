@@ -1,3 +1,5 @@
+
+
 import { Player, Lineup, StackingRules } from '../types';
 
 const ROSTER_SIZE = 5; // 1 MVP + 4 FLEX
@@ -54,9 +56,29 @@ function calculateLineupStats(mvp: Player, flex: Player[], optimizationTarget: O
       for (let j = i + 1; j < lineup.length; j++) {
           const playerA = lineup[i];
           const playerB = lineup[j];
-          const corrValue = (playerA.correlations?.[playerB.id] || playerB.correlations?.[playerB.id] || 0);
+          const corrValue = (playerA.correlations?.[playerB.id] || playerB.correlations?.[playerA.id] || 0);
           correlationScore += corrValue;
       }
+  }
+
+  // Add a bonus for the primary QB-pass catcher stack to better value them.
+  const qbInLineup = lineup.find(p => p.position === 'QB');
+  if (qbInLineup) {
+    const passCatchers = lineup.filter(p => 
+      p.team === qbInLineup.team && 
+      (p.position === 'WR' || p.position === 'TE')
+    );
+
+    if (passCatchers.length > 0) {
+      const primaryStackCorrelation = Math.max(
+        ...passCatchers.map(catcher => qbInLineup.correlations?.[catcher.id] || 0)
+      );
+      
+      if (primaryStackCorrelation > 0) {
+        // Add the strongest positive correlation value again as a bonus.
+        correlationScore += primaryStackCorrelation;
+      }
+    }
   }
 
   // NEW ROI SCORE: Heavily rewards ceiling and uniqueness (low ownership product),
@@ -102,6 +124,66 @@ function isLineupValid(mvp: Player, flex: Player[], rules: StackingRules): boole
     return true;
 }
 
+/**
+ * OPTIMIZATION: Replaced the recursive backtracking function with a much more performant
+ * dynamic programming approach (0/1 Knapsack variant) to find the optimal FLEX combination.
+ * This is a major step towards the robustness mandated by MD-TS-001.
+ */
+function findOptimalFlex(
+  flexPool: Player[],
+  remainingSlots: number,
+  remainingSalary: number,
+  optimizationTarget: OptimizationTarget
+): Player[] | null {
+  // dp[k][s] = max score for k slots with salary s.
+  const dp = Array(remainingSlots + 1).fill(0).map(() => Array(remainingSalary + 1).fill(-1));
+  // path[k][s] stores the player and previous salary that led to this optimal state.
+  const path: ({ player: Player; prev_s: number } | null)[][] = Array(remainingSlots + 1).fill(0).map(() => Array(remainingSalary + 1).fill(null));
+  
+  dp[0].fill(0);
+
+  for (const player of flexPool) {
+    const salary = player.salary;
+    const score = getTargetFpts(player, optimizationTarget);
+
+    for (let k = remainingSlots; k >= 1; k--) {
+      for (let s = remainingSalary; s >= salary; s--) {
+        if (dp[k - 1][s - salary] !== -1) {
+          const newScore = dp[k - 1][s - salary] + score;
+          if (newScore > dp[k][s]) {
+            dp[k][s] = newScore;
+            path[k][s] = { player, prev_s: s - salary };
+          }
+        }
+      }
+    }
+  }
+
+  let bestScore = -1;
+  let finalSalary = -1;
+  for (let s = 0; s <= remainingSalary; s++) {
+    if (dp[remainingSlots][s] > bestScore) {
+      bestScore = dp[remainingSlots][s];
+      finalSalary = s;
+    }
+  }
+
+  if (finalSalary === -1) return null;
+
+  // Reconstruct the path to find the players in the optimal lineup.
+  const lineup: Player[] = [];
+  let s = finalSalary;
+  for (let k = remainingSlots; k > 0 && s >= 0; k--) {
+    const p = path[k][s];
+    if (!p) break;
+    lineup.push(p.player);
+    s = p.prev_s;
+  }
+
+  return lineup.length === remainingSlots ? lineup : null;
+}
+
+
 // Rewritten, more stable recursive function to find the single best lineup
 function findOptimalLineup(
   players: Player[],
@@ -121,12 +203,6 @@ function findOptimalLineup(
     .sort((a, b) => getTargetFpts(b, optimizationTarget) - getTargetFpts(a, optimizationTarget));
   
   for (const mvp of mainPool) {
-    const isMvpLocked = lockedPlayers.some(lp => lp.id === mvp.id);
-    if (lockedPlayers.length > 0 && !isMvpLocked && lockedPlayers.every(lp => lp.id !== mvp.id)) {
-        const hasLockedMvpInPool = lockedPlayers.some(lp => mainPool.some(mp => mp.id === lp.id));
-        if (hasLockedMvpInPool) continue;
-    }
-
     const lockedFlex = lockedPlayers.filter(p => p.id !== mvp.id);
     if (lockedFlex.length > FLEX_SIZE) continue;
 
@@ -136,6 +212,7 @@ function findOptimalLineup(
 
     if (remainingSalary < 0 || remainingSlots < 0) continue;
 
+    // Handle case where all slots are filled by locked players
     if (remainingSlots === 0) {
         const signature = getLineupSignature(mvp, lockedFlex);
         if (excludedSignatures.has(signature) || !isLineupValid(mvp, lockedFlex, stackingRules)) {
@@ -154,37 +231,9 @@ function findOptimalLineup(
     }
 
     const flexPool = mainPool.filter(p => !currentLineup.some(lp => lp.id === p.id));
-
-    let bestFlexForMvp: Player[] | null = null;
-    let maxFlexFpts = -1;
-
-    function findFlex(startIndex: number, combination: Player[], currentSalary: number, currentFpts: number) {
-      if (combination.length === remainingSlots) {
-        if (currentFpts > maxFlexFpts) {
-          maxFlexFpts = currentFpts;
-          bestFlexForMvp = [...combination];
-        }
-        return;
-      }
-      
-      if (startIndex >= flexPool.length) return;
-
-      for (let i = startIndex; i < flexPool.length; i++) {
-        const player = flexPool[i];
-        if (currentSalary + player.salary <= remainingSalary) {
-          combination.push(player);
-          findFlex(
-            i + 1,
-            combination,
-            currentSalary + player.salary,
-            currentFpts + getTargetFpts(player, optimizationTarget)
-          );
-          combination.pop();
-        }
-      }
-    }
-
-    findFlex(0, [], 0, 0);
+    
+    // Use the new, efficient DP-based function to find the best FLEX players
+    const bestFlexForMvp = findOptimalFlex(flexPool, remainingSlots, remainingSalary, optimizationTarget);
 
     if (bestFlexForMvp) {
       const finalFlex = [...lockedFlex, ...bestFlexForMvp];

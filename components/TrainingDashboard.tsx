@@ -4,6 +4,7 @@ import { TunedModel } from '../types';
 interface TrainingDashboardProps {
     logEntries: string[];
     models: TunedModel[];
+    isTraining: boolean; // NEW PROP to control animation
 }
 
 const PerformanceChart: React.FC<{ models: TunedModel[] }> = ({ models }) => {
@@ -71,7 +72,7 @@ const PerformanceChart: React.FC<{ models: TunedModel[] }> = ({ models }) => {
 };
 
 
-const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ logEntries, models }) => {
+const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ logEntries, models, isTraining }) => {
     const logContainerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -82,17 +83,23 @@ const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ logEntries, model
 
     return (
         <div className="border-t border-gray-700 pt-6">
-            <h2 className="text-2xl font-bold mb-4 text-white">Oracle's Heartbeat: Continuous Training Dashboard</h2>
+            <h2 className="text-2xl font-bold mb-2 text-white">Oracle's Heartbeat: Continuous Training Dashboard</h2>
+            <p className="text-sm text-gray-400 mb-4 max-w-3xl">
+                The key metric is <strong>Validation MAE (Mean Absolute Error)</strong>, which measures how many fantasy points a model's prediction was off by, on average. For example, if the average player scores 15 FDP, an MAE of 3 means the model is off by about 20% per prediction. A lower MAE means a more accurate model.
+            </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-900 p-4 rounded-lg border border-gray-700">
                 <div>
                     <h3 className="text-lg font-semibold text-gray-300 mb-2">Performance History <span className="text-xs text-gray-500">(Lower MAE is Better)</span></h3>
                     <PerformanceChart models={models} />
                 </div>
                 <div>
-                    <h3 className="text-lg font-semibold text-gray-300 mb-2">Live Training Log</h3>
+                    <h3 className={`text-lg font-semibold text-gray-300 mb-2 flex items-center gap-2`}>
+                        {isTraining && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>}
+                        Live Training Log
+                    </h3>
                     <div ref={logContainerRef} className="h-48 bg-black p-3 rounded-md font-mono text-xs text-gray-400 overflow-y-auto border border-gray-800">
                         {logEntries.map((entry, index) => (
-                            <p key={index} className={`whitespace-pre-wrap ${entry.includes('ERROR') ? 'text-red-400' : entry.includes('Promoted') ? 'text-green-400' : ''}`}>
+                            <p key={index} className={`whitespace-pre-wrap ${entry.includes('[ERROR]') ? 'text-red-400' : entry.includes('[PROMOTION]') ? 'text-green-400' : ''}`}>
                                 {entry}
                             </p>
                         ))}

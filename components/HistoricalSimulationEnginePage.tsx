@@ -1,17 +1,35 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { TunedModel, StatWeights, ValidationReport } from '../types';
+import { TunedModel, StatWeights, ValidationReport, SimulationParams } from '../types';
 import { runFullSimulation } from '../services/historicalSimulationService';
 import { modelStore } from '../services/modelStore';
 import SpinnerIcon from './icons/SpinnerIcon';
 import LightbulbIcon from './icons/LightbulbIcon';
 import TrainingDashboard from './TrainingDashboard';
+import { VAULT_SIZE } from '../services/historicalDataVaultService';
+import ModelDetailModal from './ModelDetailModal';
+import InspectIcon from './icons/InspectIcon';
+import SimulationControls from './SimulationControls';
 
 interface HistoricalSimulationEnginePageProps {
-  onApplyWeights: (newWeights: StatWeights) => void;
-  initialWeights: StatWeights;
+  onApplyModel: (model: TunedModel) => void;
 }
 
-const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePageProps> = ({ onApplyWeights, initialWeights }) => {
+// Helper to generate a concise code for the model's source for better naming.
+const getModelSourceCode = (name: string): string => {
+    if (name.includes('Ensemble')) return 'Ensemble';
+    if (name.includes('Correlation-Infused')) return 'CorrQuant';
+    if (name.includes('Master Quant')) return 'QuantReg';
+    if (name.includes('Sabermetric')) return 'Saber';
+    if (name.includes('Averaged Hindsight')) return 'AvgAI';
+    if (name.endsWith(' Model') && name.split(' ').length === 2) {
+        // e.g., "Shootout Model" -> "ShootoutAI"
+        return `${name.split(' ')[0].substring(0, 8)}AI`;
+    }
+    return 'Custom';
+};
+
+
+const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePageProps> = ({ onApplyModel }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [progress, setProgress] = useState<{ message: string; percentage: number }>({ message: '', percentage: 0 });
@@ -20,6 +38,11 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
     const [cachedGameCount, setCachedGameCount] = useState(0);
     const [logEntries, setLogEntries] = useState<string[]>(['[SYSTEM] Training dashboard initialized. Ready for simulation.']);
     const [isContinuousTraining, setIsContinuousTraining] = useState(false);
+    const [inspectedModel, setInspectedModel] = useState<TunedModel | null>(null);
+    const [simulationParams, setSimulationParams] = useState<SimulationParams>({
+        trainValidateSplit: 75,
+        topKEnsemble: 3,
+    });
     
     // Use a ref to control the loop to avoid issues with stale state in async functions
     const isRunningRef = useRef(false);
@@ -51,12 +74,15 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
                 setValidationReport(null);
                 
                 try {
-                    const report = await runFullSimulation((message, percentage) => {
-                        setProgress({ message, percentage });
-                        if (percentage % 20 === 0 || percentage > 95) {
-                            addLogEntry(`[SIM] ${message}`);
+                    const report = await runFullSimulation(
+                        simulationParams,
+                        (message, percentage) => {
+                            setProgress({ message, percentage });
+                            if (percentage % 20 === 0 || percentage > 95) {
+                                addLogEntry(`[SIM] ${message}`);
+                            }
                         }
-                    });
+                    );
                     setValidationReport(report);
                     addLogEntry(`[VALIDATION] Cycle complete. ${report.models.length} candidate models produced.`);
 
@@ -71,7 +97,16 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
 
                         if (newMae < bestSavedMae) {
                             noImprovementCounterRef.current = 0; // Reset counter on improvement
-                            const modelName = `Chimera-Evo-MAE-${newMae.toFixed(4)}-${Date.now()}`;
+                            
+                            const maePart = newMae.toFixed(4);
+                            const scriptPart = bestNewModel.gameScript ? `${bestNewModel.gameScript}` : null;
+                            const sourcePart = getModelSourceCode(bestNewModel.name);
+                            const timePart = Date.now();
+
+                            const modelName = ['Chimera-Evo-MAE', maePart, scriptPart, sourcePart, timePart]
+                                .filter(Boolean) 
+                                .join('-');
+
                             addLogEntry(`[PROMOTION] New best model found! MAE: ${newMae.toFixed(4)} < ${bestSavedMae.toFixed(4)}. Saving as "${modelName}".`);
                             
                             const modelToSave = { ...bestNewModel, name: modelName };
@@ -109,11 +144,10 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
             isRunningRef.current = false;
         }
 
-        // Cleanup function to stop the loop when the component unmounts or state changes
         return () => {
             isRunningRef.current = false;
         };
-    }, [isContinuousTraining, addLogEntry, refreshSavedModels]);
+    }, [isContinuousTraining, addLogEntry, refreshSavedModels, simulationParams]);
 
 
     const handleRunSimulation = async () => {
@@ -122,12 +156,15 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
         setValidationReport(null);
         addLogEntry('Starting new manual simulation & validation session...');
         try {
-            const report = await runFullSimulation((message, percentage) => {
-                setProgress({ message, percentage });
-                if(percentage % 10 === 0 || percentage > 95) { // Throttle log entries
-                    addLogEntry(message);
+            const report = await runFullSimulation(
+                simulationParams,
+                (message, percentage) => {
+                    setProgress({ message, percentage });
+                    if(percentage % 10 === 0 || percentage > 95) { // Throttle log entries
+                        addLogEntry(message);
+                    }
                 }
-            });
+            );
             setValidationReport(report);
             addLogEntry(`Validation successful. ${report.models.length} candidate models produced.`);
         } catch (e) {
@@ -169,91 +206,111 @@ const HistoricalSimulationEnginePage: React.FC<HistoricalSimulationEnginePagePro
     };
 
     return (
-        <div className="bg-black border border-gray-700 p-6 rounded-lg shadow-lg space-y-8">
-            <div>
-                <h1 className="text-3xl font-bold text-white mb-2">Quantitative Model Validation & Tuning Lab</h1>
-                <p className="text-gray-400">Scientifically discover and validate predictive models using a rigorous train/validate methodology against historical data.</p>
-                <p className="text-sm text-cyan-400 mt-2">Historical Data Vault: <span className="font-bold">{cachedGameCount}</span> pre-processed games available in local cache.</p>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                 <button onClick={handleRunSimulation} disabled={isLoading || isContinuousTraining} className="w-full flex items-center justify-center gap-3 bg-red-700 hover:bg-red-600 text-white font-bold py-4 px-6 rounded-lg transition duration-300 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                    {isLoading && !isContinuousTraining ? <SpinnerIcon /> : <LightbulbIcon />}
-                    {isLoading && !isContinuousTraining ? 'Running Simulation...' : 'Run Single Simulation'}
-                </button>
-                <button onClick={handleToggleContinuousTraining} disabled={isLoading && !isContinuousTraining} className={`w-full flex items-center justify-center gap-3 font-bold py-4 px-6 rounded-lg transition duration-300 ${isContinuousTraining ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-green-700 hover:bg-green-600 text-white'} disabled:bg-gray-600 disabled:cursor-not-allowed`}>
-                    {isLoading && isContinuousTraining ? <SpinnerIcon /> : <span className="text-2xl">♾️</span>}
-                    {isContinuousTraining ? 'Stop Training Engine' : 'Start Continuous Training Engine'}
-                </button>
-            </div>
-             
-            {isLoading && (
-                 <div>
-                    <div className="w-full bg-gray-800 rounded-full h-4 border border-gray-600 overflow-hidden">
-                        <div className="bg-red-600 h-full rounded-full transition-all duration-500" style={{ width: `${progress.percentage}%` }}></div>
-                    </div>
-                    <p className="text-center text-xs mt-2 text-gray-300">{progress.message}</p>
+        <>
+            <div className="bg-black border border-gray-700 p-6 rounded-lg shadow-lg space-y-8">
+                <div>
+                    <h1 className="text-3xl font-bold text-white mb-2">Quantitative Model Validation & Tuning Lab</h1>
+                    <p className="text-gray-400">
+                        This lab uses a rigorous train/validate methodology against the Chronos Data Vault. The engine features multiple competing analytical models, including a <strong className="text-cyan-400">Matchup Supremacy Engine</strong> that adjusts projections based on player archetypes vs. defensive schemes.
+                    </p>
+                     <p className="text-sm text-cyan-400 mt-2">
+                        The engine learns from a vault of <span className="font-bold">{VAULT_SIZE}</span> historical games. To improve speed, processed games are saved to a local cache in your browser.
+                    </p>
+                    <p className="text-sm text-gray-400 mt-1">
+                        <span className="font-bold">{cachedGameCount}</span> of {VAULT_SIZE} total games are pre-processed and available in your local cache for instant simulation.
+                    </p>
                 </div>
-            )}
-            
-            {error && <div className="p-3 bg-red-500/20 text-red-300 border border-red-500 rounded">{error}</div>}
-            
-            <TrainingDashboard logEntries={logEntries} models={savedModels} />
 
-            {validationReport && (
-                 <div className="border-t border-gray-700 pt-6 animate-fade-in">
-                    <h2 className="text-2xl font-bold mb-4 text-white">Validation Report</h2>
-                    <div className="bg-gray-900 p-4 rounded-lg border border-gray-700">
-                       <p className="text-sm text-gray-400 mb-4">The following models were discovered using a <span className="font-bold text-white">{validationReport.trainingSetSize}-game training set</span> and then tested on a blind <span className="font-bold text-white">{validationReport.validationSetSize}-game validation set</span>. A lower MAE (Mean Absolute Error) on the validation set indicates a more predictively accurate model.</p>
-                       <div className="space-y-3">
-                           {validationReport.models.map((model, index) => (
-                               <div key={model.id} className={`p-4 rounded-lg border ${index === 0 ? 'bg-green-900/50 border-green-500' : 'bg-gray-800 border-gray-700'}`}>
-                                   <div className="flex flex-col sm:flex-row justify-between sm:items-center">
-                                       <div>
-                                            <h3 className="text-lg font-bold text-white">{index + 1}. {model.name}</h3>
-                                            <p className="text-xs text-gray-500">{model.sourceDescription}</p>
+                <SimulationControls
+                    params={simulationParams}
+                    onParamsChange={setSimulationParams}
+                    isDisabled={isLoading || isContinuousTraining}
+                />
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <button onClick={handleRunSimulation} disabled={isLoading || isContinuousTraining} className="w-full flex items-center justify-center gap-3 bg-red-700 hover:bg-red-600 text-white font-bold py-4 px-6 rounded-lg transition duration-300 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isLoading && !isContinuousTraining ? <SpinnerIcon /> : <LightbulbIcon />}
+                        {isLoading && !isContinuousTraining ? 'Running Simulation...' : 'Run Single Simulation'}
+                    </button>
+                    <button onClick={handleToggleContinuousTraining} disabled={isLoading && !isContinuousTraining} className={`w-full flex items-center justify-center gap-3 font-bold py-4 px-6 rounded-lg transition duration-300 ${isContinuousTraining ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-green-700 hover:bg-green-600 text-white'} disabled:bg-gray-600 disabled:cursor-not-allowed`}>
+                        {isLoading && isContinuousTraining ? <SpinnerIcon /> : <span className="text-2xl">♾️</span>}
+                        {isContinuousTraining ? 'Stop Training Engine' : 'Start Continuous Training Engine'}
+                    </button>
+                </div>
+                 
+                {isLoading && (
+                     <div>
+                        <div className="w-full bg-gray-800 rounded-full h-4 border border-gray-600 overflow-hidden">
+                            <div className="bg-red-600 h-full rounded-full transition-all duration-500" style={{ width: `${progress.percentage}%` }}></div>
+                        </div>
+                        <p className="text-center text-xs mt-2 text-gray-300">{progress.message}</p>
+                    </div>
+                )}
+                
+                {error && <div className="p-3 bg-red-500/20 text-red-300 border border-red-500 rounded">{error}</div>}
+                
+                <TrainingDashboard logEntries={logEntries} models={savedModels} isTraining={isContinuousTraining} />
+
+                {validationReport && (
+                     <div className="border-t border-gray-700 pt-6 animate-fade-in">
+                        <h2 className="text-2xl font-bold mb-4 text-white">Validation Report</h2>
+                        <div className="bg-gray-900 p-4 rounded-lg border border-gray-700">
+                           <p className="text-sm text-gray-400 mb-4">The following models were discovered using a <span className="font-bold text-white">{validationReport.trainingSetSize}-game training set</span> and then tested on a blind <span className="font-bold text-white">{validationReport.validationSetSize}-game validation set</span>. A lower MAE (Mean Absolute Error) on the validation set indicates a more predictively accurate model.</p>
+                           <div className="space-y-3">
+                               {validationReport.models.map((model, index) => (
+                                   <div key={model.id} className={`p-4 rounded-lg border ${index === 0 ? 'bg-green-900/50 border-green-500' : 'bg-gray-800 border-gray-700'}`}>
+                                       <div className="flex flex-col sm:flex-row justify-between sm:items-center">
+                                           <div>
+                                                <h3 className="text-lg font-bold text-white">{index + 1}. {model.name}</h3>
+                                                <p className="text-xs text-gray-500">{model.sourceDescription}</p>
+                                           </div>
+                                           <div className="text-left sm:text-right mt-2 sm:mt-0">
+                                                <p className="text-xs text-gray-400">Validation MAE</p>
+                                                <p className="text-2xl font-bold text-green-400">{model.performance.validationMae.toFixed(4)}</p>
+                                           </div>
                                        </div>
-                                       <div className="text-left sm:text-right mt-2 sm:mt-0">
-                                            <p className="text-xs text-gray-400">Validation MAE</p>
-                                            <p className="text-2xl font-bold text-green-400">{model.performance.validationMae.toFixed(4)}</p>
+                                       <div className="mt-3 flex gap-2">
+                                           <button onClick={() => handleSaveModel(model, model.performance.validationMae)} className="text-xs bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-1 px-3 rounded">
+                                               Promote to Library
+                                           </button>
+                                           <button onClick={() => onApplyModel(model)} className="text-xs bg-gray-600 hover:bg-gray-500 text-white font-bold py-1 px-3 rounded">
+                                                Preview in Optimizer
+                                           </button>
                                        </div>
                                    </div>
-                                   <div className="mt-3 flex gap-2">
-                                       <button onClick={() => handleSaveModel(model, model.performance.validationMae)} className="text-xs bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-1 px-3 rounded">
-                                           Promote to Library
-                                       </button>
-                                       <button onClick={() => onApplyWeights(model.weights)} className="text-xs bg-gray-600 hover:bg-gray-500 text-white font-bold py-1 px-3 rounded">
-                                            Preview in Optimizer
-                                       </button>
-                                   </div>
-                               </div>
-                           ))}
-                       </div>
+                               ))}
+                           </div>
+                        </div>
+                    </div>
+                )}
+                    
+                <div className="border-t border-gray-700 pt-6">
+                    <h2 className="text-2xl font-bold mb-4 text-white">Saved Models Library</h2>
+                    <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
+                        {savedModels.length > 0 ? savedModels.map((model, index) => (
+                            <div key={model.id} className={`p-3 rounded-md flex justify-between items-center border ${index === 0 ? 'bg-green-900/40 border-green-500/50' : 'bg-gray-800 border-gray-700'}`}>
+                                <div>
+                                    <p className="font-bold text-white">{model.name}</p>
+                                    <p className="text-xs text-gray-400">
+                                        Validation MAE: <span className="font-bold text-green-400">{model.performance.validationMae?.toFixed(4) || 'N/A'}</span> | 
+                                        Saved: {new Date(model.createdAt).toLocaleString()}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => setInspectedModel(model)} className="p-2 rounded-md hover:bg-gray-700 transition-colors" title="Inspect Model Weights">
+                                        <InspectIcon />
+                                    </button>
+                                    <button onClick={() => onApplyModel(model)} className="text-xs bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-3 rounded">Apply</button>
+                                    <button onClick={() => handleDeleteModel(model.id, model.name)} className="text-xs bg-red-800 hover:bg-red-700 text-white font-bold py-2 px-3 rounded">Delete</button>
+                                </div>
+                            </div>
+                        )) : <p className="text-gray-500 italic">No models saved yet. Run a simulation to discover, validate, and promote a new model.</p>}
                     </div>
                 </div>
-            )}
-                
-            <div className="border-t border-gray-700 pt-6">
-                <h2 className="text-2xl font-bold mb-4 text-white">Saved Models Library</h2>
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
-                    {savedModels.length > 0 ? savedModels.map((model, index) => (
-                        <div key={model.id} className={`p-3 rounded-md flex justify-between items-center border ${index === 0 ? 'bg-green-900/40 border-green-500/50' : 'bg-gray-800 border-gray-700'}`}>
-                            <div>
-                                <p className="font-bold text-white">{model.name}</p>
-                                <p className="text-xs text-gray-400">
-                                    Validation MAE: <span className="font-bold text-green-400">{model.performance.validationMae?.toFixed(4) || 'N/A'}</span> | 
-                                    Saved: {new Date(model.createdAt).toLocaleString()}
-                                </p>
-                            </div>
-                            <div className="flex gap-2">
-                                <button onClick={() => onApplyWeights(model.weights)} className="text-xs bg-green-600 hover:bg-green-500 text-white font-bold py-1 px-3 rounded">Apply</button>
-                                <button onClick={() => handleDeleteModel(model.id, model.name)} className="text-xs bg-red-800 hover:bg-red-700 text-white font-bold py-1 px-3 rounded">Delete</button>
-                            </div>
-                        </div>
-                    )) : <p className="text-gray-500 italic">No models saved yet. Run a simulation to discover, validate, and promote a new model.</p>}
-                </div>
             </div>
-        </div>
+
+            <ModelDetailModal model={inspectedModel} onClose={() => setInspectedModel(null)} />
+        </>
     );
 };
 

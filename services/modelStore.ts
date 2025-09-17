@@ -1,9 +1,7 @@
 import Dexie, { Table } from 'dexie';
 import { TunedModel, StatWeights, HistoricalGame } from '../types';
+import { PREPOPULATED_VAULT } from './data/prepopulatedVault';
 
-// FIX: Refactored to a typed Dexie instance instead of a class extension.
-// This resolves a TypeScript issue where methods on the superclass (Dexie)
-// were not being recognized on `this` inside the constructor.
 const db = new Dexie('NFLShowdownDB_v1') as Dexie & {
     tunedModels: Table<TunedModel, string>;
     historicalGames: Table<HistoricalGame, string>;
@@ -15,18 +13,38 @@ db.version(1).stores({
 });
 
 class ModelStore {
+    private initPromise: Promise<void>;
+
+    constructor() {
+        // The init process is started immediately but not awaited in the constructor.
+        // All public methods will await this promise, ensuring the DB is ready before use.
+        this.initPromise = this.init();
+    }
+
+    private async init(): Promise<void> {
+        try {
+            // Use db.historicalGames.count() directly to avoid recursive calls from a public method
+            const count = await db.historicalGames.count();
+            // Only seed the DB if it's completely empty to prime the cache on first load.
+            if (count === 0 && PREPOPULATED_VAULT.length > 0) {
+                console.log("Cache is empty. Priming with pre-populated static vault...");
+                await db.historicalGames.bulkPut(PREPOPULATED_VAULT);
+                console.log(`Successfully cached ${PREPOPULATED_VAULT.length} games.`);
+            }
+        } catch (error) {
+            console.error("Failed to initialize and prime the historical game cache:", error);
+        }
+    }
+
     // --- Model Management ---
 
     async getSavedModels(): Promise<TunedModel[]> {
+        await this.initPromise;
         try {
-            // Dexie's orderBy can only sort by a single index.
-            // For multi-level sorting (e.g., by validationMae then createdAt),
-            // we sort by the primary indexed key first, then apply secondary sorting in memory.
             const models = await db.tunedModels
                 .orderBy('performance.validationMae')
                 .toArray();
                 
-            // Secondary sort by creation date (newest first) for models with the same MAE
             return models.sort((a, b) => {
                 if (a.performance.validationMae !== b.performance.validationMae) {
                     return (a.performance.validationMae || Infinity) - (b.performance.validationMae || Infinity);
@@ -47,6 +65,7 @@ class ModelStore {
         sourceDescription: string,
         gameScript?: TunedModel['gameScript']
     ): Promise<TunedModel> {
+        await this.initPromise;
         const newModel: TunedModel = {
             id: `model_${Date.now()}`,
             name,
@@ -68,6 +87,7 @@ class ModelStore {
     }
 
     async deleteModel(modelId: string): Promise<void> {
+        await this.initPromise;
         try {
             await db.tunedModels.delete(modelId);
         } catch (error) {
@@ -77,7 +97,18 @@ class ModelStore {
 
     // --- Historical Data Vault ---
 
+    async getHistoricalGames(): Promise<HistoricalGame[]> {
+        await this.initPromise;
+        try {
+            return await db.historicalGames.toArray();
+        } catch (error) {
+            console.error("Error retrieving all historical games from vault:", error);
+            return [];
+        }
+    }
+
     async getHistoricalGame(gameId: string): Promise<HistoricalGame | null> {
+        await this.initPromise;
         try {
             const game = await db.historicalGames.get(gameId);
             return game || null;
@@ -88,6 +119,7 @@ class ModelStore {
     }
 
     async saveHistoricalGame(gameData: HistoricalGame): Promise<void> {
+        await this.initPromise;
         try {
             await db.historicalGames.put(gameData);
         } catch (error) {
@@ -96,6 +128,7 @@ class ModelStore {
     }
 
     async getHistoricalGameCount(): Promise<number> {
+        await this.initPromise;
         try {
             return await db.historicalGames.count();
         } catch (error) {

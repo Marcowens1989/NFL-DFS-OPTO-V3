@@ -1,6 +1,8 @@
 import { Player } from '../types';
 import { generateContent } from './aiModelService';
 import { Type } from '@google/genai';
+import { OwnershipResponseSchema } from './schemas';
+import { logger } from './loggingService';
 
 export interface OwnershipAnalysisResult {
     players: Player[];
@@ -64,15 +66,18 @@ export async function getAIOwnershipAnalysis(players: Player[]): Promise<Ownersh
 
     const responseText = await generateContent(prompt, { responseSchema }, 120000, 2);
     
-    // FIX: Define a type for the AI player data and strongly type the parsed JSON.
-    // This resolves errors from accessing properties on an 'unknown' type and improves type safety.
-    type AiPlayerOwnership = {
-        id: string;
-        flexOwnership: number;
-        mvpOwnership: number;
-        leverage: number;
-    };
-    const analysis: { players: AiPlayerOwnership[]; slateNotes: string; } = JSON.parse(responseText);
+    const parsedJson = JSON.parse(responseText);
+    const validationResult = OwnershipResponseSchema.safeParse(parsedJson);
+
+    if (!validationResult.success) {
+        logger.error("Zod validation failed for AI ownership response", {
+            error: validationResult.error.flatten(),
+            data: parsedJson,
+        });
+        throw new Error("AI ownership response failed validation. The data structure was not as expected.");
+    }
+    
+    const analysis = validationResult.data;
 
     const analysisMap = new Map(analysis.players.map(p => [p.id, p]));
 
@@ -81,9 +86,9 @@ export async function getAIOwnershipAnalysis(players: Player[]): Promise<Ownersh
         if (playerData) {
             return {
                 ...p,
-                flexOwnership: typeof playerData.flexOwnership === 'number' ? playerData.flexOwnership : 0,
-                mvpOwnership: typeof playerData.mvpOwnership === 'number' ? playerData.mvpOwnership : 0,
-                leverage: typeof playerData.leverage === 'number' ? playerData.leverage : 0,
+                flexOwnership: playerData.flexOwnership,
+                mvpOwnership: playerData.mvpOwnership,
+                leverage: playerData.leverage,
             };
         }
         return p;

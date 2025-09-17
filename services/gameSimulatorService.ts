@@ -31,36 +31,81 @@ function calculateActualFdp(stats: HistoricalGame['players'][0]['stats']): numbe
  * @returns A structured HistoricalGame object with raw stats and pre-game context.
  */
 export async function simulateGameDataScraping(gameId: string, description: string): Promise<HistoricalGame> {
+    const teamAbbrs = description.match(/\b([A-Z]{2,3})\b/g);
+
+    if (!teamAbbrs || teamAbbrs.length < 2) {
+        throw new Error(`Could not parse team abbreviations from game description: "${description}"`);
+    }
+    const [teamA, teamB] = teamAbbrs;
+
     const prompt = `
-        You are an automated data scraping and aggregation engine. Your task is to simulate fetching and parsing all relevant data for a historical NFL game, including advanced metrics used by DFS experts.
+        You are an automated data scraping and aggregation engine. Your task is to simulate fetching and parsing all relevant data for a historical NFL game, including a comprehensive suite of sabermetrics and schematic DNA profiles.
 
         **Game to Process:** ${description}
 
         **Instructions:**
-        1.  **Simulate Scraping Play-by-Play Data:** Act as if you are parsing the official nfl.com gamebook for this matchup. Extract all relevant offensive fantasy statistics for every player (QB, RB, WR, TE).
-        2.  **Simulate Scraping Advanced Metrics:** Emulate fetching data from advanced sources (like Pro Football Focus, Establish The Run). For each player, provide estimates for the following:
-            *   "airYards": The total distance the ball traveled in the air on passes targeted to the player.
-            *   "redZoneTouches": The total number of rushing attempts plus pass targets a player received inside the opponent's 20-yard line.
-            *   "targetShare": The percentage of the team's total pass attempts that were thrown to this player (as a number, e.g., 25.5 for 25.5%).
-            *   "rushAttemptShare": The percentage of the team's total rush attempts that this player handled (as a number, e.g., 60 for 60%).
-        3.  **Simulate Fetching Pre-Game Context:** Use your search capabilities to find the key injuries and the final Vegas line (spread and total) that were known *before kickoff*.
-        4.  **Return Structured JSON:** Format your findings into a single, valid JSON object according to the provided schema.
+        1.  **Simulate Scraping Play-by-Play Data:** Extract all relevant offensive fantasy statistics for every key player.
+        2.  **Simulate Scraping Advanced Player Metrics:** Emulate fetching data from advanced sources (PFF, Next Gen Stats). For each player, provide estimates for all applicable metrics from the schema below, including their player **archetype**.
+        3.  **Simulate Scraping Advanced Team & Situational Metrics:** Emulate fetching team-level data. For each team, provide estimates for their respective metrics. Also include game-level situational data like weather.
+        4.  **Simulate Scouting for Team DNA:** Analyze each team's typical play style and provide their primary **offensiveScheme** and **defensiveScheme**.
+        5.  **Simulate Fetching Pre-Game Context:** Use your search capabilities to find the key injuries and the final Vegas line (spread and total) that were known *before kickoff*.
+        6.  **Return Structured JSON:** Format your findings into a single, valid JSON object according to the provided schema. Omit any metric that is zero or not applicable.
 
         **JSON Schema:**
         - "gameId": The provided ID ("${gameId}").
         - "description": The provided description.
         - "pregameContext":
-            - "injuries": An array of strings describing key player injuries (e.g., "Travis Kelce (TE, KC) was inactive.").
-            - "vegasLine": A string summarizing the closing Vegas line (e.g., "KC -4.5, Total: 52.5").
+            - "injuries": Array of strings for key player injuries.
+            - "vegasLine": String summarizing the closing Vegas line.
+            - "teamDna": An object where keys are explicit team abbreviations ("${teamA}", "${teamB}"), containing their offensive and defensive schemes.
+            - "advancedTeamMetrics": An object where keys are explicit team abbreviations, containing applicable team-level metrics.
+            - "strengthOfSchedule", "weatherFactor", "homeFieldAdvantageScore": Game-level situational factors.
         - "players": An array of player objects. Each object must contain:
-            - "name": Full name.
-            - "team": Team abbreviation.
-            - "position": Position.
-            - "stats": An object containing all non-zero offensive stats (e.g., passYds, rushTds, receptions). Omit keys for stats that are zero.
-            - "advancedStats": An object containing the advanced metrics. Omit keys for stats that are zero.
+            - "name", "team", "position", "archetype".
+            - "stats": Object containing all non-zero basic offensive stats.
+            - "advancedStats": Object containing all non-zero advanced player metrics.
 
         Respond with ONLY the JSON object. Do not include any commentary or markdown formatting.
     `;
+
+    const advancedPlayerStatsSchema = {
+        type: Type.OBJECT,
+        properties: {
+            airYards: { type: Type.NUMBER }, redZoneTouches: { type: Type.NUMBER }, targetShare: { type: Type.NUMBER }, rushAttemptShare: { type: Type.NUMBER },
+            yardsPerRouteRun: { type: Type.NUMBER }, aDOT: { type: Type.NUMBER }, yardsAfterCatch: { type: Type.NUMBER }, routesRun: { type: Type.NUMBER },
+            avoidedTackles: { type: Type.NUMBER }, yardsCreatedPerTouch: { type: Type.NUMBER }, playActionPassRate: { type: Type.NUMBER }, timeToThrow: { type: Type.NUMBER },
+            cleanPocketCompletion: { type: Type.NUMBER }, underPressureCompletion: { type: Type.NUMBER }, deepBallCompletion: { type: Type.NUMBER }, redZoneConversionRate: { type: Type.NUMBER },
+        }
+    };
+    
+    const singleTeamMetricsProperties = {
+        offensiveLineRank: { type: Type.NUMBER }, defensiveLineRank: { type: Type.NUMBER }, passRushWinRate: { type: Type.NUMBER },
+        runStopWinRate: { type: Type.NUMBER }, secondaryCoverageRank: { type: Type.NUMBER }, playsPerGame: { type: Type.NUMBER },
+        neutralSituationPace: { type: Type.NUMBER }, neutralSituationPassRate: { type: Type.NUMBER },
+        coachingAggressivenessScore: { type: Type.NUMBER }, turnoverDifferential: { type: Type.NUMBER },
+    };
+
+    const advancedTeamMetricsSchema = {
+        type: Type.OBJECT,
+        properties: {
+            [teamA]: { type: Type.OBJECT, properties: singleTeamMetricsProperties },
+            [teamB]: { type: Type.OBJECT, properties: singleTeamMetricsProperties }
+        },
+    };
+    
+    const teamDnaSchema = {
+        type: Type.OBJECT,
+        properties: {
+            [teamA]: {
+                type: Type.OBJECT,
+                properties: { offensiveScheme: { type: Type.STRING }, defensiveScheme: { type: Type.STRING } }
+            },
+            [teamB]: {
+                type: Type.OBJECT,
+                properties: { offensiveScheme: { type: Type.STRING }, defensiveScheme: { type: Type.STRING } }
+            }
+        }
+    };
 
     const responseSchema = {
         type: Type.OBJECT,
@@ -71,7 +116,12 @@ export async function simulateGameDataScraping(gameId: string, description: stri
                 type: Type.OBJECT,
                 properties: {
                     injuries: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    vegasLine: { type: Type.STRING }
+                    vegasLine: { type: Type.STRING },
+                    teamDna: teamDnaSchema,
+                    advancedTeamMetrics: advancedTeamMetricsSchema,
+                    strengthOfSchedule: { type: Type.NUMBER },
+                    weatherFactor: { type: Type.NUMBER },
+                    homeFieldAdvantageScore: { type: Type.NUMBER },
                 },
                 required: ['injuries', 'vegasLine']
             },
@@ -80,9 +130,8 @@ export async function simulateGameDataScraping(gameId: string, description: stri
                 items: {
                     type: Type.OBJECT,
                     properties: {
-                        name: { type: Type.STRING },
-                        team: { type: Type.STRING },
-                        position: { type: Type.STRING },
+                        name: { type: Type.STRING }, team: { type: Type.STRING }, position: { type: Type.STRING },
+                        archetype: { type: Type.STRING },
                         stats: {
                             type: Type.OBJECT,
                             properties: {
@@ -92,17 +141,9 @@ export async function simulateGameDataScraping(gameId: string, description: stri
                                 fumblesLost: { type: Type.NUMBER },
                             }
                         },
-                         advancedStats: {
-                            type: Type.OBJECT,
-                            properties: {
-                                airYards: { type: Type.NUMBER },
-                                redZoneTouches: { type: Type.NUMBER },
-                                targetShare: { type: Type.NUMBER },
-                                rushAttemptShare: { type: Type.NUMBER },
-                            }
-                        }
+                        advancedStats: advancedPlayerStatsSchema,
                     },
-                    required: ['name', 'team', 'position', 'stats']
+                    required: ['name', 'team', 'position', 'stats', 'archetype']
                 }
             }
         },
@@ -110,10 +151,9 @@ export async function simulateGameDataScraping(gameId: string, description: stri
     };
 
     try {
-        const responseText = await generateContent(prompt, { responseSchema }, 120000, 2);
+        const responseText = await generateContent(prompt, { responseSchema }, 180000, 2);
         const parsedData: Omit<HistoricalGame, 'players'> & { players: Omit<HistoricalGame['players'][0], 'actualFdp'>[] } = JSON.parse(responseText);
         
-        // Post-process to calculate the actual FDP for each player and store it.
         const playersWithFdp = parsedData.players.map(player => ({
             ...player,
             actualFdp: calculateActualFdp(player.stats)
